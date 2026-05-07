@@ -1,1 +1,1 @@
-# cross_modal_feature_heterogenity
+# Same Concept, Different Directions: Cross-Modal Feature Heterogeneity in Sparse Autoencoders
