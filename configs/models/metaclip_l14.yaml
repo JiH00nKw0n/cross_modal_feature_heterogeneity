@@ -1,0 +1,7 @@
+key: metaclip_l14
+backend: transformers
+hf_id: facebook/metaclip-l14-400m
+hidden_size: 768
+text_max_length: 77
+is_siglip: false
+image_size: 224

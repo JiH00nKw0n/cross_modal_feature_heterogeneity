@@ -1,0 +1,32 @@
+# Shared CC3M downstream defaults — paper-grade hyperparameters.
+# Per-model files extend this via !ref, overriding `model` and `output.root`.
+
+training:
+  lr: 5.0e-4
+  num_epochs: 10
+  batch_size: 1024
+  weight_decay: 1.0e-5
+  max_grad_norm: 1.0
+  k: 32
+  latent_size: 8192
+  warmup_ratio: 0.05
+  device: cuda
+  seed: 0
+
+methods:
+  - {name: shared,       aux_weight: 0.0}
+  - {name: separated,    aux_weight: 0.0}
+  - {name: iso_align,    aux_weight: 1.0e-4}
+  - {name: group_sparse, aux_weight: 0.05}
+  - {name: ours,         aux_weight: 0.0}
+
+eval:
+  retrieval: true
+  zeroshot: true
+  steering: true
+  monosemanticity: true
+  steering_alphas: [0.0, 0.1, 0.25, 0.5, 1.0, 2.0]
+  steering_n_base: 100
+  ms_dataset: cc3m
+  ms_split: validation
+  external_encoder: metaclip_b32

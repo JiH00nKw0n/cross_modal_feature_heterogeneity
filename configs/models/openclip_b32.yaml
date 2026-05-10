@@ -1,0 +1,8 @@
+key: datacomp_b32
+backend: openclip
+arch: ViT-B-32
+pretrained: datacomp_xl_s13b_b90k
+hidden_size: 512
+text_max_length: 77
+is_siglip: false
+image_size: 224

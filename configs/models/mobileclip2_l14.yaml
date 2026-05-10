@@ -1,0 +1,8 @@
+key: mobileclip2_l14
+backend: openclip
+arch: MobileCLIP2-L-14
+pretrained: dfndr2b
+hidden_size: 768
+text_max_length: 77
+is_siglip: false
+image_size: 224

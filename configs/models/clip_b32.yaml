@@ -1,0 +1,7 @@
+key: clip_b32
+backend: transformers
+hf_id: openai/clip-vit-base-patch32
+hidden_size: 512
+text_max_length: 77
+is_siglip: false
+image_size: 224

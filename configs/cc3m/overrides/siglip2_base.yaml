@@ -1,0 +1,12 @@
+kind: cc3m_downstream
+model: !ref ../../models/siglip2_base.yaml
+cache:
+  cache_dir: cache/siglip2_base_cc3m
+  dataset: cc3m
+  split: train
+training: !ref ../_shared.yaml#training
+methods: !ref ../_shared.yaml#methods
+eval: !ref ../_shared.yaml#eval
+output:
+  root: outputs/cc3m_siglip2_base
+  save_decoders: true
