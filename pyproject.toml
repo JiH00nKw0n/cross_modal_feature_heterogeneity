@@ -1,7 +1,7 @@
 [project]
 name = "vlm-sae"
 version = "0.1.0"
-description = "Cross-Modal Feature Heterogeneity in Multimodal SAEs — reproducible suite"
+description = "Cross-Modal Feature Heterogeneity in Sparse Autoencoders — reproducible suite"
 requires-python = ">=3.10"
 
 dependencies = [
