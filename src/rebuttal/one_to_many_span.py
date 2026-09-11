@@ -65,6 +65,10 @@ NAME = "one_to_many_span"
 #: value. It was not: a negative correlation does not make a partner.
 THRESHOLD_RULE = "signed correlation C[i,j] >= tau (not |C|)"
 
+#: Bootstrap resamples behind each 95 percent interval, when the caller names
+#: no other number. The paper's own script for this measurement drew 2000.
+DEFAULT_N_BOOT = 2000
+
 #: The five subspaces each image direction is projected onto, in report order.
 #: Key is the json field; value is the phrase used in the markdown table.
 ARM_LABELS = {
@@ -123,7 +127,7 @@ def run(
     out_dir: str | Path,
     device: str = "cpu",
     tau: float = 0.4,
-    n_boot: int = 1000,
+    n_boot: int = DEFAULT_N_BOOT,
     n_draws: int = 20,
     seed: int = 0,
     **knobs: Any,
@@ -135,6 +139,8 @@ def run(
 
     tau       Correlation at or above which a text latent counts as a partner.
     n_boot    Bootstrap resamples over groups, for the 95 percent intervals.
+              Defaults to 2000, the number the paper's script drew; the
+              pipeline passes the one number its config names.
     n_draws   Random draws averaged per group in each of the three control arms.
     seed      Seed of the draws and of the bootstrap.
     device    Unused; the whole measurement is a projection of stored decoder
@@ -404,4 +410,5 @@ def _write_report(out_dir: Path, setting: Setting, payload: dict[str, Any]) -> N
     ])
 
 
-__all__ = ["run", "explained_fraction", "find_groups", "NAME", "THRESHOLD_RULE", "ARM_LABELS"]
+__all__ = ["run", "explained_fraction", "find_groups", "DEFAULT_N_BOOT", "NAME",
+           "THRESHOLD_RULE", "ARM_LABELS"]

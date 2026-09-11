@@ -85,6 +85,10 @@ NAME = "coco80_heterogeneity"
 #: Random unit vector pairs drawn for the floor.
 DEFAULT_N_RANDOM_PAIRS = 2000
 
+#: Bootstrap resamples behind each 95 percent interval, when the caller names
+#: no other number. The paper's own script for this measurement drew 2000.
+DEFAULT_N_BOOT = 2000
+
 #: The comparisons reported, in table order, with what each one pairs.
 COMPARISONS = (
     ("within_image_two_halves",
@@ -438,17 +442,21 @@ def _write_report(setting: Setting, out_dir: Path, labels: Coco80Labels,
             f"produced a pick on both halves of the photographs."
         )
 
-    share_high = comparisons["cross_modal_same_category"]["share_above_0p9"]
-    share_low = comparisons["cross_modal_same_category"]["share_below_0p3"]
+    cross = comparisons.get("cross_modal_same_category") or {}
+    share_high = cross.get("share_above_0p9")
+    share_low = cross.get("share_below_0p3")
     scale = (
         f"For reference, pairs built from two different categories have a median "
         f"cosine of {fmt(median_of('cross_modal_different_category'))} and random "
-        f"unit vectors {fmt(median_of('random_unit_vectors'))}. Of the "
-        f"{head['n_categories']} categories, "
-        f"{round(share_high * head['n_categories'])} have a cross-modal "
-        f"cosine above 0.9 and {round(share_low * head['n_categories'])} "
-        f"have one below 0.3."
+        f"unit vectors {fmt(median_of('random_unit_vectors'))}."
     )
+    if share_high is not None and share_low is not None:
+        scale += (
+            f" Of the {head['n_categories']} categories, "
+            f"{round(share_high * head['n_categories'])} have a cross-modal "
+            f"cosine above 0.9 and {round(share_low * head['n_categories'])} "
+            f"have one below 0.3."
+        )
     extremes = _extremes_sentence(head)
     if extremes:
         scale = f"{scale} {extremes}"
@@ -506,10 +514,15 @@ def run(setting: Setting, *, out_dir: str | Path, device: str = "cpu",
     a single shared dictionary has one direction per concept and so has no
     cross-modal angle to report.
 
-    Knobs, all optional: `n_boot` (default 1000, and the pipeline always passes
-    it), `min_support` (default 0.05), `min_count` (default 50), `seed`
-    (default 0), `batch_size` (default 4096), plus everything
-    `coco80_labels.load_or_build` takes. Any other keyword is ignored.
+    Knobs, all optional: `n_boot` (default 2000, the number the paper's script
+    drew, and the pipeline always passes its own), `min_support` (default 0.05),
+    `min_count` (default 50), `seed` (default 0), `batch_size` (default 4096),
+    plus everything `coco80_labels.load_or_build` takes. Any other keyword is
+    ignored.
+
+    Raises when no object category clears `min_count` on both halves, naming
+    the conditions that emptied the set, because a report of no categories
+    would otherwise be written as though it were a measurement.
     """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -520,7 +533,7 @@ def run(setting: Setting, *, out_dir: str | Path, device: str = "cpu",
 
     min_count = int(knobs.get("min_count", DEFAULT_MIN_COUNT))
     min_support = float(knobs.get("min_support", DEFAULT_MIN_SUPPORT))
-    n_boot = int(knobs.get("n_boot", 1000))
+    n_boot = int(knobs.get("n_boot", DEFAULT_N_BOOT))
     seed = int(knobs.get("seed", 0))
     batch_size = int(knobs.get("batch_size", DEFAULT_BATCH_SIZE))
 
@@ -561,6 +574,23 @@ def run(setting: Setting, *, out_dir: str | Path, device: str = "cpu",
                     NAME, variant, variants[variant]["n_categories"],
                     fmt(entry["cosine_median"]) if entry else "n/a")
 
+    if not variants[VARIANTS[0]]["n_categories"]:
+        # Raised before anything is written, so that a rerun starts from a
+        # clean directory rather than from a json holding no measurement. The
+        # three conditions named here are the ones that can empty the set.
+        raise ValueError(
+            f"no object category survived on the {labels.split} split of "
+            f"{setting.coco_cache}, so there is nothing to measure. A category "
+            f"is kept only when it has at least {min_count} positive "
+            f"photographs in one half and {min_count} positive captions in the "
+            f"other, and only when some coordinate fires on at least "
+            f"{100 * min_support:.0f} percent of its positives. The split holds "
+            f"{labels.n_images:,} photographs and {labels.n_captions:,} "
+            f"captions. Lower min_count, lower min_support, or lower area_frac "
+            f"(now {labels.area_frac_threshold:.2f}), or measure a split with "
+            f"more photographs."
+        )
+
     payload = {
         "analysis": NAME,
         "setting": setting.as_dict(),
@@ -587,4 +617,4 @@ def run(setting: Setting, *, out_dir: str | Path, device: str = "cpu",
     return payload
 
 
-__all__ = ["COMPARISONS", "DEFAULT_N_RANDOM_PAIRS", "NAME", "run"]
+__all__ = ["COMPARISONS", "DEFAULT_N_BOOT", "DEFAULT_N_RANDOM_PAIRS", "NAME", "run"]

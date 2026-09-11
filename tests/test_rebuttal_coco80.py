@@ -251,6 +251,33 @@ def test_ties_score_one_half() -> None:
     assert auc[0, 0] == pytest.approx(0.5)
 
 
+def test_the_separation_score_is_the_pairwise_definition_with_ties_at_one_half() -> None:
+    """Repeated activation values get half credit, not sort order.
+
+    The paper's script counted a negative by its position in the stable sort,
+    so a positive took either the full point or none against a negative holding
+    the identical value. The rule here is the standard one, checked against the
+    pairwise definition of the area under the ROC curve on inputs built to
+    repeat values exactly.
+    """
+    def pairwise(scores: np.ndarray, y: np.ndarray) -> float:
+        pos, neg = scores[y], scores[~y]
+        u = sum((p > n) + 0.5 * (p == n) for p in pos for n in neg)
+        return float(u) / (len(pos) * len(neg))
+
+    rng = np.random.default_rng(0)
+    for _ in range(50):
+        n_samples = 30
+        dense = rng.choice([0.0, 0.0, 0.5, 0.5, 1.0, 2.0], size=n_samples)
+        y = rng.integers(0, 2, size=n_samples).astype(bool)
+        if y.all() or not y.any():
+            continue
+        firing = np.where(dense > 0)[0].astype(np.int64)
+        auc, _ = corr.auc_matrix(firing, np.zeros(firing.size, dtype=np.int64),
+                                 dense[firing], y[:, None], n_samples, 1, 0.0)
+        assert auc[0, 0] == pytest.approx(pairwise(dense, y))
+
+
 def test_a_coordinate_below_the_support_floor_is_taken_out_of_the_maximum() -> None:
     n_samples = 100
     labels = np.zeros((n_samples, 1), dtype=bool)
@@ -348,6 +375,22 @@ def test_the_heterogeneity_analysis_writes_every_comparison(coco_world, tmp_path
     text = (out_dir / "coco80_heterogeneity.md").read_text()
     assert "—" not in text
     assert "One row per object category" in text
+
+
+def test_the_heterogeneity_analysis_says_why_no_category_survived(
+        coco_world, tmp_path) -> None:
+    """Demanding more positives than exist names the conditions, not a KeyError.
+
+    Nothing may be written either, so that the next run starts from an empty
+    directory rather than from a json that holds no measurement.
+    """
+    out_dir = tmp_path / "out_het_empty"
+    setting = _setting(coco_world, out_dir=out_dir, with_baselines=False)
+    with pytest.raises(ValueError, match="no object category survived"):
+        het.run(setting, out_dir=out_dir, device="cpu",
+                **_knobs(coco_world, min_count=10_000))
+    assert not (out_dir / "coco80_heterogeneity.json").exists()
+    assert not (out_dir / "coco80_heterogeneity.md").exists()
 
 
 def test_the_heterogeneity_analysis_is_idempotent(coco_world, tmp_path) -> None:

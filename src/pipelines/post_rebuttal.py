@@ -16,9 +16,12 @@ Stages (selected with `--stage`):
             `<root>/post_rebuttal_results.md`.
   all       The four above, in that order.
 
-Every stage is idempotent. A checkpoint, a panel or an analysis json that
-already exists is not rebuilt, and a panel on disk is reused only when its
-sidecar says it was built under the rules being asked for.
+Every stage is idempotent. A checkpoint or a panel that already exists is not
+rebuilt, and a panel on disk is reused only when its sidecar says it was built
+under the rules being asked for. An analysis is skipped only when it left a
+complete result behind, which means its json, its report and no record of a
+failure. An analysis that died after writing its json is run again from the
+start rather than counted as done.
 
 One analysis that raises does not stop the rest. Its traceback is written to
 `<out_dir>/<name>.error.txt`, the remaining analyses still run, the report is
@@ -83,6 +86,11 @@ REPORT_NAME = "post_rebuttal_results.md"
 #: panels are left out: they are inputs to the numbers, not readable results,
 #: and a panel is hundreds of megabytes.
 _INVENTORY_SUFFIXES = (".md", ".pdf", ".png", ".json", ".tex")
+
+#: Weight files that mark a directory as a trained checkpoint. Every small file
+#: beside one of these, such as a checkpoint's config.json, is left out of the
+#: inventory for the same reason the weights themselves are.
+_CHECKPOINT_WEIGHTS = ("model.safetensors", "pytorch_model.bin")
 
 #: How each inventory suffix is described in the table.
 _INVENTORY_KINDS = {
@@ -155,7 +163,6 @@ def _rebuttal_stage(cfg: Config) -> list[tuple[str, str, Path]]:
     if not settings:
         logger.warning("[post_rebuttal] cfg.rebuttal.settings selects no setting")
         return []
-    device = cfg.figure2.training.device
 
     _train_second_coco_model(cfg, settings.get("coco_k8"))
 
@@ -165,8 +172,21 @@ def _rebuttal_stage(cfg: Config) -> list[tuple[str, str, Path]]:
         setting.out_dir.mkdir(parents=True, exist_ok=True)
         _write_setting_manifest(setting)
         _build_extra_panels(cfg, setting)
-        failures += _run_analyses(cfg, setting, device=device)
+        failures += _run_analyses(cfg, setting,
+                                  device=_training_for(cfg, setting).device)
     return failures
+
+
+def _training_for(cfg: Config, setting: Setting):
+    """The training block that produced this setting's checkpoints.
+
+    A setting's panels have to be built with the same batch size and on the
+    same device as the models they read, so the CC3M setting reads the Table 1
+    config rather than the Figure 2 one. Reading the wrong block is invisible in
+    the result and shows up only as a memory error on a machine whose batch size
+    was lowered in the config that governs that corpus.
+    """
+    return cfg.table1.training if setting.dataset == "cc3m" else cfg.figure2.training
 
 
 def _train_second_coco_model(cfg: Config, setting: Setting | None) -> None:
@@ -243,10 +263,11 @@ def _panel_once(cfg: Config, setting: Setting, *, path: Path, pairing: str,
             logger.info("[post_rebuttal][skip] %s exists", path)
             return
         logger.warning("[post_rebuttal] rebuilding %s: %s", path, why)
+    training = _training_for(cfg, setting)
     payload = build_panel(
         model=model, cache_dir=setting.cache_dir, split=setting.split,
-        batch_size=cfg.figure2.training.batch_size,
-        device=cfg.figure2.training.device,
+        batch_size=training.batch_size,
+        device=training.device,
         max_samples=0, shuffle_seed=shuffle_seed, pairing=pairing,
         model_b=model_b, ckpt_a=ckpt_a, ckpt_b=ckpt_b,
     )
@@ -260,9 +281,15 @@ def _run_analyses(cfg: Config, setting: Setting, *,
 
     One analysis that raises does not stop the others: its traceback is written
     to `<out_dir>/<name>.error.txt` and it is returned as a failure, so that the
-    run reaches every remaining measurement and still exits non-zero. An
-    analysis whose json is already on disk is skipped, which is what makes a
-    restart cheap.
+    run reaches every remaining measurement and still exits non-zero.
+
+    An analysis is skipped only when it left a complete result behind: its json,
+    its report, and no traceback from a previous attempt. Every analysis writes
+    its json before its figure and its report, so a crash or a kill in between
+    leaves a json that describes work nobody can read. Such a json is deleted
+    and the analysis is run again, because the analyses themselves return the
+    json on disk untouched when one is there and would otherwise never rewrite
+    the missing report.
 
     Returns one (setting tag, analysis name, traceback path) per failure.
     """
@@ -275,14 +302,25 @@ def _run_analyses(cfg: Config, setting: Setting, *,
         "n_boot": int(cfg.rebuttal.n_boot),
         "null_seed": int(cfg.rebuttal.null_seed),
     }
+    if cfg.rebuttal.batch_size is not None:
+        # Only passed when the config asks for it, so that leaving the key out
+        # keeps each analysis on the batch size its own author chose.
+        knobs["batch_size"] = int(cfg.rebuttal.batch_size)
     failures: list[tuple[str, str, Path]] = []
     for index, analysis in enumerate(selected, start=1):
         out_json = setting.out_dir / f"{analysis.name}.json"
         error_path = setting.out_dir / f"{analysis.name}.error.txt"
-        if out_json.exists():
+        incomplete = _incomplete_result(setting.out_dir, analysis.name)
+        if out_json.exists() and incomplete is None:
             logger.info("[post_rebuttal][skip] %s exists", out_json)
             error_path.unlink(missing_ok=True)
             continue
+        if out_json.exists():
+            logger.warning(
+                "[post_rebuttal] %s: %s left an unfinished result behind (%s), "
+                "so %s is deleted and the analysis is run again",
+                setting.tag, analysis.name, incomplete, out_json)
+            out_json.unlink()
         logger.info("[post_rebuttal] %s: start %s (%d of %d)",
                     setting.tag, analysis.name, index, len(selected))
         started = time.perf_counter()
@@ -315,6 +353,22 @@ def _run_analyses(cfg: Config, setting: Setting, *,
         logger.info("[post_rebuttal] %s: end %s, %.1f s elapsed",
                     setting.tag, analysis.name, elapsed)
     return failures
+
+
+def _incomplete_result(out_dir: Path, name: str) -> str | None:
+    """Why the files of one analysis do not amount to a finished result.
+
+    Returns None when they do. Otherwise returns one clause naming what is
+    wrong, which the caller puts in its log line. Either the report is missing,
+    or the previous attempt recorded a traceback next to the json.
+    """
+    md_path = out_dir / f"{name}.md"
+    error_path = out_dir / f"{name}.error.txt"
+    if not md_path.exists():
+        return f"its report {md_path} is missing"
+    if error_path.exists():
+        return f"the previous attempt failed and left {error_path}"
+    return None
 
 
 def _write_setting_manifest(setting: Setting) -> None:
@@ -430,19 +484,40 @@ def _split_title(text: str, fallback: str, shift: int = 2) -> tuple[str, list[st
 # --------------------------------------------------------------------------- #
 # report: the inventory, and the two paper deliverables
 # --------------------------------------------------------------------------- #
+def _is_result_file(path: Path) -> bool:
+    """Whether one file is a result a reader would open, rather than an input.
+
+    A report, a figure, a LaTeX table and a json of numbers are results. Two
+    kinds of json are not. One is the `config.json` written inside a trained
+    checkpoint, recognised by the weight file beside it. The other is the
+    sidecar of a co-activation panel, recognised by the `.npz` of the same name
+    beside it. Both belong to artefacts the inventory says it does not list, so
+    listing their small companion files would contradict it.
+    """
+    if not path.is_file() or path.suffix not in _INVENTORY_SUFFIXES:
+        return False
+    if path.name == REPORT_NAME:
+        return False
+    if path.suffix == ".json":
+        if path.with_suffix(".npz").exists():
+            return False
+        if any((path.parent / w).exists() for w in _CHECKPOINT_WEIGHTS):
+            return False
+    return True
+
+
 def _inventory_section(out_root: Path) -> list[str]:
     """A table of every readable file under the output root, with its size.
 
     Only reports, figures, numbers and LaTeX sources are listed. Checkpoints
     and co-activation panels are inputs to these numbers rather than results,
-    and one panel is hundreds of megabytes, so neither appears.
+    and one panel is hundreds of megabytes, so neither appears, and neither do
+    the small json files that sit inside a checkpoint or beside a panel.
     """
     rows: list[tuple[str, str, str]] = []
     if out_root.exists():
         for path in sorted(out_root.rglob("*")):
-            if not path.is_file() or path.suffix not in _INVENTORY_SUFFIXES:
-                continue
-            if path.name == REPORT_NAME:
+            if not _is_result_file(path):
                 continue
             kilobytes = path.stat().st_size / 1024.0
             rows.append((
@@ -459,7 +534,9 @@ def _inventory_section(out_root: Path) -> list[str]:
          "table below is relative to that directory. The trained checkpoints "
          "and the co-activation panels are deliberately not listed: they are "
          "inputs to the numbers below rather than results, and one panel is "
-         "hundreds of megabytes. This document itself is not listed either."),
+         "hundreds of megabytes. The small json files that belong to those two, "
+         "a checkpoint's `config.json` and a panel's sidecar, are left out for "
+         "the same reason. This document itself is not listed either."),
         "",
     ]
     if not rows:

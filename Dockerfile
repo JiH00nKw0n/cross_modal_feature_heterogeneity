@@ -45,8 +45,11 @@ RUN pip install --no-cache-dir -e /app/repo
 # Size the mounted cache volume for both halves of what lands there: the
 # Hugging Face downloads under cache/hf (COCO alone is about 20 GB) and the
 # embedding caches beside them (about 2 GB for COCO, 13 GB for CC3M, 3 GB for
-# ImageNet), plus the 241 MB of COCO object annotations the rebuttal analyses
-# download into cache/coco_annotations.
+# ImageNet), plus the COCO object annotations the rebuttal analyses download
+# into cache/coco_annotations, which is a 253 MB archive that leaves a 161 MB
+# json behind and is then deleted. Leave room for one more copy of the CC3M
+# embedding cache as well: extraction writes its parts and the assembled file
+# before removing the parts, so that cache peaks near 26 GB rather than 13 GB.
 
 RUN cp /app/repo/docker/entrypoint.sh /usr/local/bin/entrypoint.sh \
  && chmod +x /usr/local/bin/entrypoint.sh

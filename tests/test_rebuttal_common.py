@@ -18,8 +18,10 @@ from src.rebuttal.common import (
     bootstrap_ci,
     describe,
     fmt,
+    load_panel_or_raise,
     matched_distance,
     md_table,
+    panel_build_command,
     pct,
     settings_from_config,
     unit_decoder,
@@ -233,6 +235,49 @@ def test_setting_panel_path_points_at_the_right_file() -> None:
     assert coco.panel_path("txt_txt_diffcap") == coco.panels_dir / "txt_txt_diffcap.npz"
 
 
+def test_a_setting_tag_nobody_defined_is_refused(monkeypatch) -> None:
+    """A typo in the config must not read as a deliberately empty run.
+
+    An unknown analysis name already raises; an unknown setting used to be
+    dropped in silence, which ended the whole rebuttal stage successfully with
+    nothing measured and no section in the report.
+    """
+    cfg = load_config(CONFIGS / "post_rebuttal" / "clip_b32.yaml")
+    cfg.rebuttal.settings = ["coco_k9"]
+    with pytest.raises(ValueError, match="unknown settings.*coco_k9"):
+        settings_from_config(cfg)
+
+
+# --------------------------------------------------------------------------- #
+# load_panel_or_raise
+# --------------------------------------------------------------------------- #
+def test_a_missing_panel_names_the_stage_that_actually_builds_it() -> None:
+    """The rebuttal stage builds the extra panels and nothing else.
+
+    The image-to-text panel is written by the stage that produced the
+    deliverable it belongs to, so pointing a reader at the rebuttal stage for a
+    missing one sends them round a loop that rebuilds nothing.
+    """
+    extra = Path("outputs/post_rebuttal/rebuttal/cc3m_k32/panels/img_img.npz")
+    assert panel_build_command(extra).endswith("--stage rebuttal")
+
+    cc3m = Path("outputs/post_rebuttal/cc3m_clip_b32/seed0/ours/panel.npz")
+    assert panel_build_command(cc3m).endswith("--stage table1")
+
+    coco = Path("outputs/post_rebuttal/coco_clip_b32/clip_b32/panel.npz")
+    assert panel_build_command(coco).endswith("--stage figure2")
+
+
+def test_a_missing_panel_raises_with_that_command_in_the_message(
+        tmp_path: Path) -> None:
+    missing = tmp_path / "cc3m_clip_b32" / "seed0" / "ours" / "panel.npz"
+    with pytest.raises(FileNotFoundError) as caught:
+        load_panel_or_raise(missing)
+    message = str(caught.value)
+    assert "--stage table1" in message
+    assert "--stage rebuttal" not in message
+
+
 def test_settings_need_both_pipeline_configs() -> None:
     cfg = load_config(CONFIGS / "post_rebuttal" / "clip_b32.yaml")
     cfg.table1 = None
@@ -263,7 +308,12 @@ def test_ensure_coco_annotations_downloads_nothing_when_both_files_are_there(
 
 def test_ensure_coco_annotations_unpacks_an_already_downloaded_zip(
         tmp_path: Path, monkeypatch) -> None:
-    """Only the two instance files are pulled out, under the directory itself."""
+    """Only the validation instances are pulled out, under the directory itself.
+
+    The archive is deleted once it has been unpacked and the 333 MB training
+    instances are never written, because nothing in this repository opens
+    either of them and the operating guide sizes the disk for what is kept.
+    """
     import zipfile
 
     from src.rebuttal import common
@@ -271,14 +321,17 @@ def test_ensure_coco_annotations_unpacks_an_already_downloaded_zip(
     monkeypatch.setattr(common, "_download_resumable", lambda *a, **k: None)
     ann_dir = tmp_path / "coco_annotations"
     ann_dir.mkdir()
-    with zipfile.ZipFile(ann_dir / "annotations_trainval2014.zip", "w") as zf:
-        for name in common.COCO_INSTANCE_FILES:
+    zip_path = ann_dir / "annotations_trainval2014.zip"
+    with zipfile.ZipFile(zip_path, "w") as zf:
+        for name in ("instances_val2014.json", "instances_train2014.json"):
             zf.writestr(f"annotations/{name}", '{"images": []}')
         zf.writestr("annotations/captions_val2014.json", "{}")
     paths = common.ensure_coco_annotations(ann_dir)
     assert (ann_dir / "instances_val2014.json").read_text() == '{"images": []}'
     assert not (ann_dir / "captions_val2014.json").exists()
-    assert paths["instances_train2014.json"] == ann_dir / "instances_train2014.json"
+    assert not (ann_dir / "instances_train2014.json").exists()
+    assert not zip_path.exists(), "the archive was kept after it was unpacked"
+    assert set(paths) == {"instances_val2014.json"}
 
 
 # --------------------------------------------------------------------------- #
@@ -288,7 +341,10 @@ def test_the_post_rebuttal_config_carries_the_stated_knobs() -> None:
     cfg = load_config(CONFIGS / "post_rebuttal" / "clip_b32.yaml")
     assert cfg.rebuttal.tau == pytest.approx(0.4)
     assert cfg.rebuttal.null_seed == 7
-    assert cfg.rebuttal.n_boot == 1000
+    # 2000 is the number the paper's own rebuttal scripts drew.
+    assert cfg.rebuttal.n_boot == 2000
+    # Left unset, so each analysis keeps the batch size its own author chose.
+    assert cfg.rebuttal.batch_size is None
     assert cfg.rebuttal.coco_seed_b == 1
     assert cfg.rebuttal.analyses == ["all"]
     assert cfg.output.root == "outputs/post_rebuttal"

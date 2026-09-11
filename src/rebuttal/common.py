@@ -67,13 +67,16 @@ SETTING_CORPUS = {"coco_k8": ("COCO", "the paper's Figure 2 point"),
                   "cc3m_k32": ("CC3M", "the paper's Table 1 point")}
 
 #: URL of the COCO 2014 instance annotations, the external ground truth the
-#: COCO-80 tests need. 241 MB compressed.
+#: COCO-80 tests need. The archive is 253 MB.
 COCO_ANNOTATIONS_URL = (
     "http://images.cocodataset.org/annotations/annotations_trainval2014.zip"
 )
 
-#: The two files pulled out of that zip.
-COCO_INSTANCE_FILES = ("instances_val2014.json", "instances_train2014.json")
+#: The file pulled out of that zip. Only the validation instances are kept,
+#: because both COCO-80 analyses read `instances_val2014.json`, which covers
+#: every photograph of the COCO test split they measure. The training instances
+#: are a further 333 MB that nothing in this repository opens.
+COCO_INSTANCE_FILES = ("instances_val2014.json",)
 
 
 # --------------------------------------------------------------------------- #
@@ -184,6 +187,11 @@ def settings_from_config(cfg) -> dict[str, Setting]:
     reads is always the one those pipelines wrote. Returns a dict keyed by tag,
     holding only the tags listed in `cfg.rebuttal.settings`, in the order they
     appear in `SETTING_TAGS`.
+
+    A tag nobody defined raises, for the same reason an unregistered analysis
+    name raises in `src.rebuttal.registry`. A typo would otherwise read as a
+    deliberately empty run, and the whole rebuttal stage would end successfully
+    having measured nothing.
     """
     if cfg.figure2 is None or cfg.table1 is None:
         raise ValueError(
@@ -193,6 +201,12 @@ def settings_from_config(cfg) -> dict[str, Setting]:
     root = Path(cfg.output.root)
     rebuttal_root = root / "rebuttal"
     wanted = set(getattr(cfg.rebuttal, "settings", SETTING_TAGS) or SETTING_TAGS)
+    unknown = sorted(wanted - set(SETTING_TAGS))
+    if unknown:
+        raise ValueError(
+            f"unknown settings in rebuttal.settings: {', '.join(unknown)}; "
+            f"the settings that exist are {', '.join(SETTING_TAGS)}"
+        )
 
     fig = cfg.figure2
     tab = cfg.table1
@@ -258,6 +272,31 @@ def settings_from_config(cfg) -> dict[str, Setting]:
 # --------------------------------------------------------------------------- #
 # Reading what the panels and the checkpoints hold
 # --------------------------------------------------------------------------- #
+def panel_build_command(path: str | Path) -> str:
+    """The stage that writes the panel at `path`, as a command to run.
+
+    Two stages write panels and they are not interchangeable. The extra panels
+    under a `panels/` directory, which compare two training runs or destroy the
+    pairing, are the rebuttal stage's own. The image-to-text panel is written by
+    the stage that produced the deliverable it belongs to, which is the Figure 2
+    stage for the COCO point and the Table 1 stage for the CC3M point. The
+    rebuttal stage never rebuilds that one, so naming the rebuttal stage for a
+    missing image-to-text panel sends the reader around a loop that rebuilds
+    nothing.
+    """
+    path = Path(path)
+    base = "python run.py configs/post_rebuttal/clip_b32.yaml --stage "
+    if path.parent.name == "panels":
+        return f"{base}rebuttal"
+    parts = {p.lower() for p in path.parts}
+    if any("cc3m" in p for p in parts):
+        return f"{base}table1"
+    if any("coco" in p for p in parts):
+        return f"{base}figure2"
+    return (f"{base}figure2 for the COCO point, or {base}table1 for the "
+            "CC3M point")
+
+
 def load_panel_or_raise(path: str | Path) -> dict[str, Any]:
     """Read a panel, failing with the command that would build it.
 
@@ -267,8 +306,7 @@ def load_panel_or_raise(path: str | Path) -> dict[str, Any]:
     path = Path(path)
     if not path.exists():
         raise FileNotFoundError(
-            f"{path} is missing. Build it with the rebuttal stage: "
-            "python run.py configs/post_rebuttal/clip_b32.yaml --stage rebuttal"
+            f"{path} is missing. Build it with: {panel_build_command(path)}"
         )
     return load_panel(path)
 
@@ -495,11 +533,14 @@ def ensure_coco_annotations(cache_dir: str | Path = "cache/coco_annotations") ->
 
     The COCO-80 tests need a concept label that the model had no part in
     producing, and COCO's hand-drawn object annotations are that label. They
-    ship in one 241 MB zip which is downloaded once into `cache_dir` and unpacked
-    into `instances_val2014.json` and `instances_train2014.json` directly under
-    it.
+    ship in one 253 MB zip which is downloaded once into `cache_dir` and
+    unpacked into `instances_val2014.json` directly under it. The archive is
+    then deleted, because nothing reads it again and keeping it would leave
+    three times the needed bytes on a disk the operating guide sizes in advance.
+    The extracted file is 161 MB, and the peak during extraction is the two
+    together.
 
-    Idempotent: returns immediately when both json files are already there.
+    Idempotent: returns immediately when the json file is already there.
     Resumable: a partial download is kept as `<name>.part` and continued with an
     HTTP range request on the next call. Progress is logged every 16 MB.
 
@@ -530,6 +571,14 @@ def ensure_coco_annotations(cache_dir: str | Path = "cache/coco_annotations") ->
                 shutil.copyfileobj(src, dst)
             logger.info("[coco-annotations] wrote %s (%.1f MB)",
                         out_path, out_path.stat().st_size / 1e6)
+
+    # Dropped only once every target is on disk, so that a failed extraction
+    # still leaves the archive to retry from rather than forcing the download
+    # again.
+    if all(p.exists() and p.stat().st_size > 0 for p in targets.values()):
+        zip_path.unlink(missing_ok=True)
+        logger.info("[coco-annotations] removed %s, the extracted files are enough",
+                    zip_path)
     return targets
 
 
@@ -542,7 +591,7 @@ def _download_resumable(url: str, out_path: Path, chunk: int = 1 << 20) -> None:
         headers["Range"] = f"bytes={have}-"
         logger.info("[coco-annotations] resuming %s at %.1f MB", url, have / 1e6)
     else:
-        logger.info("[coco-annotations] downloading %s (241 MB)", url)
+        logger.info("[coco-annotations] downloading %s (253 MB)", url)
 
     req = Request(url, headers=headers)
     with urlopen(req) as resp:
@@ -582,6 +631,7 @@ __all__ = [
     "SETTING_TITLES",
     "SETTING_CORPUS",
     "load_panel_or_raise",
+    "panel_build_command",
     "unit_decoder",
     "matched_distance",
     "describe",

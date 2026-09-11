@@ -102,6 +102,11 @@ class Coco80Labels:
                   of the photograph that caption belongs to.
     caption_text  The caption strings, aligned with `caption_rows`. Empty strings
                   when the cache carries no captions.json.
+    n_images_all_splits
+                  How many annotated photographs the cache could serve if every
+                  split counted, not only `split`. Recorded for reference
+                  because the paper's own script built its labels over that
+                  larger population; nothing here reads it as data.
     """
 
     image_ids: np.ndarray
@@ -115,6 +120,7 @@ class Coco80Labels:
     area_frac_threshold: float
     split: str
     instances_path: str
+    n_images_all_splits: int = 0
 
     def matrix(self, variant: str) -> np.ndarray:
         """The label matrix of one variant: "area_filtered" or "no_area"."""
@@ -193,6 +199,23 @@ def _split_image_rows(cache: dict[str, Any], split: str) -> tuple[dict[int, int]
     return image_row, caption_rows
 
 
+def _annotated_in_every_split(cache: dict[str, Any],
+                              frame_area: dict[int, float]) -> int:
+    """How many annotated photographs the cache holds across all of its splits.
+
+    Reported alongside the labels so that the cost of restricting them to one
+    split is visible in the output rather than only in this module's docstring.
+    The paper's own script built its labels over exactly this larger population.
+    """
+    seen: set[int] = set()
+    for keys in cache["splits"].values():
+        for key in keys:
+            image_id = _image_id_of(key)
+            if image_id is not None:
+                seen.add(image_id)
+    return len(seen & set(frame_area))
+
+
 def build_labels(
     *,
     instances_path: str | Path,
@@ -231,8 +254,11 @@ def build_labels(
     cache_keys = cache["keys"]
 
     usable = sorted(set(frame_area) & set(image_row))
-    logger.info("[%s] annotated photographs %d, split %r photographs %d, both %d",
-                NAME, len(frame_area), split, len(image_row), len(usable))
+    every_split = _annotated_in_every_split(cache, frame_area)
+    logger.info("[%s] annotated photographs %d, split %r photographs %d, both %d "
+                "(all splits together would give %d)",
+                NAME, len(frame_area), split, len(image_row), len(usable),
+                every_split)
     if not usable:
         raise ValueError(
             f"no photograph of split {split!r} in {coco_cache} appears in "
@@ -283,6 +309,7 @@ def build_labels(
         area_frac_threshold=float(area_frac),
         split=str(split),
         instances_path=str(instances_path),
+        n_images_all_splits=every_split,
     )
 
 
@@ -351,6 +378,7 @@ def _to_payload(labels: Coco80Labels, min_count: int) -> dict[str, Any]:
         "min_count": int(min_count),
         "categories": list(COCO_80),
         "n_images": labels.n_images,
+        "n_images_all_splits": int(labels.n_images_all_splits),
         "n_captions": labels.n_captions,
         "image_ids": labels.image_ids.astype(int).tolist(),
         "half": labels.half.astype(int).tolist(),
@@ -398,6 +426,7 @@ def _from_payload(payload: dict[str, Any], caption_text: list[str]) -> Coco80Lab
         area_frac_threshold=float(payload["area_frac_threshold"]),
         split=str(payload["split"]),
         instances_path=str(payload["instances_path"]),
+        n_images_all_splits=int(payload.get("n_images_all_splits", 0)),
     )
 
 
@@ -491,6 +520,18 @@ def _write_report(setting: Setting, out_dir: Path, labels: Coco80Labels,
         f"{int((labels.half == 1).sum()):,}, carrying "
         f"{int((labels.half[labels.caption_owner] == 1).sum()):,} of the captions."
     )
+    held_out = (
+        f"Counting every split of the cache rather than the {labels.split} split "
+        f"alone would give {labels.n_images_all_splits:,} annotated photographs, "
+        f"against the {labels.n_images:,} used here. The larger population is the "
+        f"one the paper's own script labelled. It is not used, because the "
+        f"sparse autoencoders of the COCO setting were fitted on the training "
+        f"split of this same cache, and scoring them on photographs they were "
+        f"fitted to would measure memorization rather than concept structure. "
+        f"The consequence is that fewer object categories reach "
+        f"{min_count} positives per half here than in the paper, so the counts "
+        f"below are not comparable to the published ones."
+    )
 
     rows = []
     for variant in VARIANTS:
@@ -539,7 +580,7 @@ def _write_report(setting: Setting, out_dir: Path, labels: Coco80Labels,
     return write_md(
         Path(out_dir) / f"{NAME}.md",
         f"COCO-80 object labels, {setting.tag}",
-        [intro, population],
+        [intro, population, held_out],
         [("How many categories survive", summary),
          ("Positives per object category", per_cat)],
     )

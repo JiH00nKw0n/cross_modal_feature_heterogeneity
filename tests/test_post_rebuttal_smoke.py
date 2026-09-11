@@ -313,6 +313,170 @@ def test_one_failing_analysis_does_not_stop_the_others(tmp_path: Path,
     assert (out_dir / "works.json").exists()
 
 
+def test_an_analysis_that_died_after_its_json_is_run_again(
+        tmp_path: Path, monkeypatch) -> None:
+    """A json with no report beside it is not a finished analysis.
+
+    Every analysis writes its json before its figure and its report, so a crash
+    or a kill in between leaves a json describing work nobody can read. The
+    analyses themselves return that json untouched when one is on disk, so the
+    pipeline has to delete it; otherwise the half-finished state is permanent
+    and the combined report says only that the analysis is missing.
+    """
+    ran: list[str] = []
+
+    def works(setting: Setting, *, out_dir, device, **knobs) -> dict:
+        ran.append(setting.tag)
+        (Path(out_dir) / "works.json").write_text('{"rows": 1}')
+        (Path(out_dir) / "works.md").write_text("# Works\n\nMeasured 1 row.\n")
+        return {"rows": 1}
+
+    module = types.ModuleType("tests_works_again")
+    module.run = works
+    monkeypatch.setitem(sys.modules, "tests_works_again", module)
+    monkeypatch.setattr(registry, "ANALYSES", [
+        Analysis("works", "tests_works_again", ("coco_k8",)),
+    ])
+
+    monkeypatch.chdir(tmp_path)
+    _write_caches(tmp_path)
+    cfg = _tiny_config(tmp_path)
+    _place_checkpoints(cfg)
+
+    out_dir = tmp_path / "out" / "rebuttal" / "coco_k8"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / "works.json").write_text('{"rows": "from the killed run"}')
+    (out_dir / "works.error.txt").write_text("the figure never finished\n")
+
+    post_rebuttal_run(cfg, stage="rebuttal")
+
+    assert ran == ["coco_k8"], "the half-finished analysis was treated as done"
+    assert json.loads((out_dir / "works.json").read_text()) == {"rows": 1}
+    assert (out_dir / "works.md").exists()
+    assert not (out_dir / "works.error.txt").exists()
+
+
+def test_each_setting_builds_its_panels_with_its_own_training_block(
+        tmp_path: Path) -> None:
+    """A CC3M panel reads the CC3M config, not the COCO one.
+
+    Both a batch size and a device live in the training block, and a panel has
+    to be built with the ones that belong to the corpus it covers. Reading the
+    COCO block for a CC3M panel is invisible in the result and shows up only as
+    a memory error on a machine whose CC3M batch size was lowered.
+    """
+    from src.pipelines.post_rebuttal import _training_for
+    from src.rebuttal.common import settings_from_config
+
+    cfg = _tiny_config(tmp_path)
+    cfg.figure2.training.batch_size = 8
+    cfg.table1.training.batch_size = 4
+    settings = settings_from_config(cfg)
+    assert _training_for(cfg, settings["coco_k8"]).batch_size == 8
+    assert _training_for(cfg, settings["cc3m_k32"]).batch_size == 4
+
+
+def test_the_analysis_batch_size_reaches_the_analyses_only_when_it_is_set(
+        tmp_path: Path, monkeypatch) -> None:
+    """The training batch size does not govern the analyses; this knob does.
+
+    Left unset, an analysis keeps the batch size its own author chose, so the
+    keyword must not appear at all. Set, every analysis is called with it, which
+    is the only way out of a memory error raised inside one of them.
+    """
+    seen: list[dict] = []
+
+    def works(setting: Setting, *, out_dir, device, **knobs) -> dict:
+        seen.append(dict(knobs))
+        (Path(out_dir) / "works.json").write_text("{}")
+        (Path(out_dir) / "works.md").write_text("# Works\n\nMeasured 0 rows.\n")
+        return {}
+
+    module = types.ModuleType("tests_knobs")
+    module.run = works
+    monkeypatch.setitem(sys.modules, "tests_knobs", module)
+    monkeypatch.setattr(registry, "ANALYSES", [
+        Analysis("works", "tests_knobs", ("coco_k8",)),
+    ])
+
+    monkeypatch.chdir(tmp_path)
+    _write_caches(tmp_path)
+    cfg = _tiny_config(tmp_path)
+    _place_checkpoints(cfg)
+
+    post_rebuttal_run(cfg, stage="rebuttal")
+    assert "batch_size" not in seen[-1]
+
+    (tmp_path / "out" / "rebuttal" / "coco_k8" / "works.json").unlink()
+    cfg.rebuttal.batch_size = 256
+    post_rebuttal_run(cfg, stage="rebuttal")
+    assert seen[-1]["batch_size"] == 256
+
+
+def test_a_finished_analysis_is_skipped_and_its_json_kept(
+        tmp_path: Path, monkeypatch) -> None:
+    """Json, report and no traceback: nothing is recomputed and nothing deleted."""
+    def explode(setting: Setting, *, out_dir, device, **knobs) -> dict:
+        raise AssertionError("a finished analysis was run again")
+
+    module = types.ModuleType("tests_never_called")
+    module.run = explode
+    monkeypatch.setitem(sys.modules, "tests_never_called", module)
+    monkeypatch.setattr(registry, "ANALYSES", [
+        Analysis("works", "tests_never_called", ("coco_k8",)),
+    ])
+
+    monkeypatch.chdir(tmp_path)
+    _write_caches(tmp_path)
+    cfg = _tiny_config(tmp_path)
+    _place_checkpoints(cfg)
+
+    out_dir = tmp_path / "out" / "rebuttal" / "coco_k8"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / "works.json").write_text('{"rows": 7}')
+    (out_dir / "works.md").write_text("# Works\n\nMeasured 7 rows.\n")
+
+    post_rebuttal_run(cfg, stage="rebuttal")
+    assert json.loads((out_dir / "works.json").read_text()) == {"rows": 7}
+
+
+# --------------------------------------------------------------------------- #
+# report
+# --------------------------------------------------------------------------- #
+def test_the_inventory_leaves_out_the_files_it_says_it_leaves_out(
+        tmp_path: Path) -> None:
+    """A checkpoint's config.json and a panel's sidecar are not results.
+
+    The paragraph above the table promises that the checkpoints and the
+    co-activation panels are not listed, so the small json files that belong to
+    them must not be listed either.
+    """
+    from src.pipelines.post_rebuttal import _inventory_section
+
+    root = tmp_path / "out"
+    ckpt = root / "cc3m_clip_b32" / "seed0" / "separated" / "final"
+    ckpt.mkdir(parents=True)
+    (ckpt / "model.safetensors").write_bytes(b"weights")
+    (ckpt / "config.json").write_text("{}")
+    panel_dir = root / "cc3m_clip_b32" / "seed0" / "ours"
+    panel_dir.mkdir(parents=True)
+    (panel_dir / "panel.npz").write_bytes(b"panel")
+    (panel_dir / "panel.json").write_text("{}")
+    analysis = root / "rebuttal" / "cc3m_k32"
+    analysis.mkdir(parents=True)
+    (analysis / "match_confidence.json").write_text("{}")
+    (analysis / "match_confidence.md").write_text("# Match confidence\n")
+
+    lines = _inventory_section(root)
+    listed = [line for line in lines if line.startswith("| `")]
+    assert len(listed) == 2
+    assert any("match_confidence.json" in line for line in listed)
+    assert any("match_confidence.md" in line for line in listed)
+    assert not any("config.json" in line for line in listed)
+    assert not any("panel.json" in line for line in listed)
+    assert "2 files in all" in "\n".join(lines)
+
+
 def test_the_report_names_a_missing_analysis_instead_of_dropping_it(
         tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(registry, "ANALYSES", [

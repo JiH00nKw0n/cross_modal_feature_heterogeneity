@@ -199,6 +199,14 @@ def auc_matrix(
     among equal non-zero activations are handled the same way, each tied pair
     counting as one half.
 
+    That last sentence is where this differs from the paper's own script, which
+    counted a negative by its position in the sort and so gave a positive either
+    the full point or none against a negative holding the identical activation
+    value. The two therefore agree on every coordinate whose non-zero
+    activations are all distinct, and differ only where an activation value
+    repeats exactly. The half-credit rule used here is the standard one and is
+    what the reports of both COCO-80 analyses state they measure.
+
     Returns a (n_latents, n_categories) matrix of scores and a matrix of the
     share of each category's positives the coordinate fires on. A score whose
     support is below `min_support` is set to negative infinity, which takes it

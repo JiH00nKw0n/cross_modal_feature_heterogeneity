@@ -192,7 +192,14 @@ class RebuttalConfig:
     zero means "do not shuffle".
 
     `n_boot` is the number of bootstrap resamples behind every confidence
-    interval.
+    interval. 2000 is the number the paper's own rebuttal scripts drew.
+
+    `batch_size` is how many embedding rows an analysis encodes per forward
+    pass. Left unset, each analysis keeps the batch size its own author chose,
+    and those differ because the analyses build differently sized intermediate
+    matrices. Setting one number here forces every analysis down to it, which
+    is the only way out of a memory error raised inside an analysis: the
+    training batch size in the two pipeline configs does not reach them.
 
     `settings` names which trained configurations to analyse: "coco_k8" is the
     paper's Figure 2 point, "cc3m_k32" its Table 1 point.
@@ -207,7 +214,8 @@ class RebuttalConfig:
 
     tau: float = 0.4
     null_seed: int = 7
-    n_boot: int = 1000
+    n_boot: int = 2000
+    batch_size: int | None = None
     settings: list[str] = field(default_factory=lambda: ["coco_k8", "cc3m_k32"])
     analyses: list[str] = field(default_factory=lambda: ["all"])
     coco_seed_b: int = 1

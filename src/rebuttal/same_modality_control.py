@@ -27,10 +27,21 @@ once, as the distance to the partner that assignment gave it. That is a
 deliberate difference from the paper's script, which summarized every cell of
 the correlation matrix above a threshold and then collapsed each row to its own
 median so that one frequently firing latent could not dominate. With one pair
-per latent that collapsing step has nothing left to do, and the two summaries
-`median_over_cells` and `median_over_latents` in the json are equal by
-construction. The field names are kept so the two runs of the numbers can be
-laid side by side.
+per latent that collapsing step has nothing left to do, so the json reports a
+single set of numbers per restriction, under names that say what they measure.
+They are `median_cosine_distance` and `mean_cosine_distance` over
+`n_matched_pairs` pairs. The paper's script called its own quantities
+`median_over_cells` and `median_over_latents`, and those names are deliberately
+not reused here, because a value computed over one partner per latent is not the
+value they held and sharing a name would invite the two to be compared as though
+they were.
+
+Two training runs are compared and no more. Model A is the setting's seed 0 and
+model B is the one further run the pipeline trains, so every same-modality row
+rests on exactly one pair of independent runs. The paper's script trained three
+runs and tabulated all three pairings of them. That spread across run pairs is
+not measured here, and the report says so rather than leaving a reader to assume
+it was.
 
 The reference value drawn in the figure is 1.0, the cosine distance between two
 directions drawn independently at random in a space of this many dimensions.
@@ -140,9 +151,11 @@ def _summarize(corr: np.ndarray, dist: np.ndarray, thr: float,
                n_boot: int, seed: int) -> dict[str, Any]:
     """Distance over the matched pairs whose correlation clears `thr`.
 
-    Field names follow the paper's script so its numbers and these line up.
-    Because a latent has exactly one matched partner, the "over cells" and
-    "over latents" summaries are the same set of values here.
+    One value per latent, because a latent has exactly one matched partner, so
+    `n_matched_pairs` is both the number of pairs and the number of latents
+    behind every figure in the entry. The `quantity` field spells that out
+    inside the json, so the file states what it holds without its reader
+    consulting this module.
     """
     sel = corr >= thr
     vals = dist[sel]
@@ -151,19 +164,20 @@ def _summarize(corr: np.ndarray, dist: np.ndarray, thr: float,
     n = int(vals.size)
     return {
         "threshold": float(thr),
-        "n_pairs": n,
-        "n_rows": n,
-        "median_over_cells": med if n else float("nan"),
-        "mean_over_cells": mean if n else float("nan"),
-        "median_over_latents": med if n else float("nan"),
-        "mean_over_latents": mean if n else float("nan"),
-        "sd_over_latents": float(np.std(vals, ddof=1)) if n > 1 else float("nan"),
-        "iqr_over_latents": (
+        "quantity": ("cosine distance between a latent and the single partner "
+                     "the panel's Hungarian assignment gave it, over the "
+                     "latents alive on both sides whose matched correlation is "
+                     "at least the threshold"),
+        "n_matched_pairs": n,
+        "median_cosine_distance": med if n else float("nan"),
+        "mean_cosine_distance": mean if n else float("nan"),
+        "sd_cosine_distance": float(np.std(vals, ddof=1)) if n > 1 else float("nan"),
+        "iqr_cosine_distance": (
             [float(np.percentile(vals, 25)), float(np.percentile(vals, 75))]
             if n else [float("nan"), float("nan")]
         ),
-        "ci95_over_latents": [lo, hi],
-        "ci95_mean_over_latents": [mlo, mhi],
+        "ci95_median": [lo, hi],
+        "ci95_mean": [mlo, mhi],
     }
 
 
@@ -360,6 +374,14 @@ def _report(setting: Setting, payload: dict[str, Any], path: Path) -> None:
         "intervals are 95 percent percentile bootstrap intervals over "
         f"{payload['n_boot']:,} resamples of those latents."
     )
+    runs = (
+        f"The two training runs compared are {setting.ckpt_a} and "
+        f"{setting.ckpt_b}. They differ in their random seed and in nothing "
+        f"else. Exactly one pair of runs is measured, so every row below that "
+        f"names two runs reports the distance between that one pair; how much "
+        f"the distance itself varies from one pair of runs to another is not "
+        f"measured here and no number below should be read as bounding it."
+    )
 
     summary_rows = []
     for e in panels.values():
@@ -390,12 +412,11 @@ def _report(setting: Setting, payload: dict[str, Any], path: Path) -> None:
                            (f"correlation at least {fallback_c:g}", "fallback")):
             h = e[key]
             head_rows.append([
-                e["description"], label, f"{h['n_pairs']:,}",
-                fmt(h["median_over_latents"]),
-                f"[{fmt(h['ci95_over_latents'][0])}, {fmt(h['ci95_over_latents'][1])}]",
-                fmt(h["mean_over_latents"]),
-                (f"[{fmt(h['ci95_mean_over_latents'][0])}, "
-                 f"{fmt(h['ci95_mean_over_latents'][1])}]"),
+                e["description"], label, f"{h['n_matched_pairs']:,}",
+                fmt(h["median_cosine_distance"]),
+                f"[{fmt(h['ci95_median'][0])}, {fmt(h['ci95_median'][1])}]",
+                fmt(h["mean_cosine_distance"]),
+                f"[{fmt(h['ci95_mean'][0])}, {fmt(h['ci95_mean'][1])}]",
             ])
     head = md_table(
         ["comparison", "restriction", "matched pairs kept",
@@ -420,7 +441,7 @@ def _report(setting: Setting, payload: dict[str, Any], path: Path) -> None:
         band_rows,
     ) if band_keys else ""
 
-    paragraphs = [intro, counting]
+    paragraphs = [intro, counting, runs]
     tables = [
         ("Cosine distance between a latent and its matched partner", summary),
         (("The same distance restricted to pairs whose correlation clears a "

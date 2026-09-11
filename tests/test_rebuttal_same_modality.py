@@ -167,9 +167,31 @@ def test_the_two_thresholds_are_the_headline_and_the_tau_knob(tmp_path: Path) ->
     for entry in payload["panels"].values():
         assert entry["headline"]["threshold"] == 0.7
         assert entry["fallback"]["threshold"] == 0.3
-        assert entry["headline"]["n_pairs"] <= entry["fallback"]["n_pairs"]
-        # One matched partner per latent means a pair is a latent.
-        assert entry["headline"]["n_pairs"] == entry["headline"]["n_rows"]
+        assert entry["headline"]["n_matched_pairs"] <= \
+            entry["fallback"]["n_matched_pairs"]
+
+
+def test_the_summary_keys_name_the_matched_pair_quantity_they_hold(
+        tmp_path: Path) -> None:
+    """The paper's script measured something else under `*_over_latents`.
+
+    Its summary collapsed every correlation-matrix cell above the threshold to
+    one median per row; this one takes the single Hungarian partner of each
+    latent. Reusing its field names would let the two be diffed as if they were
+    the same number, so the old names must be gone and the new ones must state
+    the unit they are counted in.
+    """
+    setting = _build_setting(tmp_path)
+    payload = smc.run(setting, out_dir=tmp_path / "out", device="cpu", n_boot=10)
+
+    entry = payload["panels"]["img_txt"]["headline"]
+    assert set(entry) == {
+        "threshold", "quantity", "n_matched_pairs", "median_cosine_distance",
+        "mean_cosine_distance", "sd_cosine_distance", "iqr_cosine_distance",
+        "ci95_median", "ci95_mean",
+    }
+    assert "Hungarian" in entry["quantity"]
+    assert entry["n_matched_pairs"] <= payload["panels"]["img_txt"]["n_usable"]
 
 
 def test_running_twice_reuses_the_json_instead_of_recomputing(tmp_path: Path) -> None:
