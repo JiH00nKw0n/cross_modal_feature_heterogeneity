@@ -180,9 +180,44 @@ class OutputConfig:
 
 
 @dataclass
+class RebuttalConfig:
+    """Knobs of the post-rebuttal analyses.
+
+    `tau` is the co-activation correlation a latent pair has to reach before
+    its two feature directions are compared. 0.4 is the working threshold; the
+    reports also show 0.6.
+
+    `null_seed` is the row shuffle that destroys the image-to-caption pairing
+    and so turns a panel into a noise floor. It has to be non-zero, because
+    zero means "do not shuffle".
+
+    `n_boot` is the number of bootstrap resamples behind every confidence
+    interval.
+
+    `settings` names which trained configurations to analyse: "coco_k8" is the
+    paper's Figure 2 point, "cc3m_k32" its Table 1 point.
+
+    `analyses` names which analysis modules to run, or holds the single entry
+    "all".
+
+    `coco_seed_b` is the training seed of the second COCO model, the
+    independent run that the same-modality comparisons need. The Figure 2
+    pipeline trains seed 0; the rebuttal stage trains this second one itself.
+    """
+
+    tau: float = 0.4
+    null_seed: int = 7
+    n_boot: int = 1000
+    settings: list[str] = field(default_factory=lambda: ["coco_k8", "cc3m_k32"])
+    analyses: list[str] = field(default_factory=lambda: ["all"])
+    coco_seed_b: int = 1
+
+
+@dataclass
 class Config:
     """Unified config — all pipelines.  Some fields unused per kind."""
-    kind: str = ""                  # synthetic_sweep | multi_density | cc3m_downstream
+    # synthetic_sweep | multi_density | cc3m_downstream | post_rebuttal
+    kind: str = ""
     model: ModelConfig | None = None
     models: list[ModelConfig] = field(default_factory=list)  # multi_density only
     cache: CacheConfig | None = None
@@ -195,6 +230,13 @@ class Config:
     sweep: SweepConfig = field(default_factory=SweepConfig)
     # multi-density-only:
     extraction: dict[str, Any] = field(default_factory=dict)
+    # post_rebuttal-only: the knobs, plus the two pipeline configs it drives.
+    # `figure2` and `table1` are whole Configs of kind multi_density and
+    # cc3m_downstream, pulled in with !ref, so the rebuttal reads exactly the
+    # checkpoints and panels those two pipelines wrote.
+    rebuttal: RebuttalConfig = field(default_factory=RebuttalConfig)
+    figure2: "Config | None" = None
+    table1: "Config | None" = None
 
 
 def load_config(path: str | os.PathLike) -> Config:
@@ -256,4 +298,13 @@ def _from_dict(raw: dict[str, Any]) -> Config:
         cfg.sweep = SweepConfig(**raw["sweep"])
     if "extraction" in raw:
         cfg.extraction = raw["extraction"]
+    if "rebuttal" in raw and raw["rebuttal"]:
+        cfg.rebuttal = RebuttalConfig(
+            **_known_only(RebuttalConfig, _coerce(raw["rebuttal"]), "rebuttal"))
+    # A post_rebuttal config carries two whole pipeline configs, so the same
+    # parser runs on them: whatever `load_config` would have made of
+    # clip_b32_coco.yaml on its own is what lands in `cfg.figure2`.
+    for nested in ("figure2", "table1"):
+        if raw.get(nested):
+            setattr(cfg, nested, _from_dict(raw[nested]))
     return cfg

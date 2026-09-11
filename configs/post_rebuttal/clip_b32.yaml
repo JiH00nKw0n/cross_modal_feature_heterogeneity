@@ -1,0 +1,38 @@
+# Everything the post-rebuttal response needs, for CLIP ViT-B/32.
+#
+# Four stages, run in this order by `--stage all`:
+#   figure2   the COCO density figure, delegated to the config under `figure2`
+#   table1    the CC3M downstream table, delegated to the config under `table1`
+#   rebuttal  trains the second COCO model, builds the extra co-activation
+#             panels, then runs every registered analysis on both settings
+#   report    gathers every analysis report into
+#             outputs/post_rebuttal/post_rebuttal_results.md
+#
+# `figure2` and `table1` are the two pipeline configs verbatim, so the
+# rebuttal always reads the checkpoints and panels those pipelines wrote.
+
+kind: post_rebuttal
+
+figure2: !ref clip_b32_coco.yaml
+table1: !ref clip_b32_cc3m.yaml
+
+rebuttal:
+  # Co-activation correlation a latent pair has to reach before its two
+  # feature directions are compared.
+  tau: 0.4
+  # Row shuffle that destroys the image-to-caption pairing, giving the noise
+  # floor panel. Must not be 0, which means "do not shuffle".
+  null_seed: 7
+  # Bootstrap resamples behind every confidence interval.
+  n_boot: 1000
+  # coco_k8  = COCO, k = 8, 30 epochs   (the paper's Figure 2 point)
+  # cc3m_k32 = CC3M, k = 32, 10 epochs  (the paper's Table 1 point)
+  settings: [coco_k8, cc3m_k32]
+  # Analysis module names, or the single entry "all".
+  analyses: [all]
+  # Training seed of the second COCO model, the independent run the
+  # same-modality comparisons need. Figure 2 itself trains seed 0.
+  coco_seed_b: 1
+
+output:
+  root: outputs/post_rebuttal
