@@ -18,13 +18,15 @@ YAML per experiment.
 bash scripts/docker_build.sh
 docker run --rm --gpus all \
   -e HF_TOKEN=$HF_TOKEN \
-  -e CONFIG=configs/post_rebuttal/clip_b32_cc3m.yaml \
+  -e CONFIG=configs/post_rebuttal/clip_b32.yaml \
   -v $PWD/cache:/app/repo/cache -v $PWD/outputs:/app/repo/outputs \
   vlm-sae
 ```
 
-The container reads `CONFIG` (required) and `STAGE` (optional, default `all`)
-from the environment and runs `python run.py "$CONFIG" --stage "$STAGE"`.
+The container reads `CONFIG` (default `configs/post_rebuttal/clip_b32.yaml`,
+which produces Table 1, Figure 2 and every rebuttal analysis in one run) and
+`STAGE` (default `all`) from the environment, and runs
+`python run.py "$CONFIG" --stage "$STAGE"`.
 `HF_TOKEN` is required for the ImageNet-1K extraction, which is a gated dataset.
 
 The mounted `cache/` directory holds two things, so size the volume for both.
@@ -51,8 +53,11 @@ python -m venv .venv && .venv/bin/pip install -e ".[test]"
 
 | Deliverable | Command | Output |
 |---|---|---|
+| Everything below the synthetic sweeps, in one run | `bash scripts/run_post_rebuttal.sh all` | `outputs/post_rebuttal/post_rebuttal_results.md` |
 | Table 1, five methods on CC3M, three seeds | `bash scripts/run_post_rebuttal.sh table1` | `outputs/post_rebuttal/cc3m_clip_b32/table1.md` and `table1.tex` |
 | Figure 2, decoder cosine density on COCO | `bash scripts/run_post_rebuttal.sh figure2` | `outputs/post_rebuttal/coco_clip_b32/multi_density.pdf` |
+| The eleven post-rebuttal analyses | `bash scripts/run_post_rebuttal.sh rebuttal` | `outputs/post_rebuttal/rebuttal/<setting>/<analysis>.md` |
+| One archive of every report, figure, number file and table | `bash scripts/run_post_rebuttal.sh deliverables` | `outputs/post_rebuttal_deliverables.tar.gz` |
 | Synthetic sweep over the angle between paired feature directions | `bash scripts/run_synthetic_alpha.sh` | `outputs/theorem2_alpha_sweep_l2/runs/<timestamp>/params/*.npz` |
 | Synthetic sweep over the auxiliary-loss weight | `bash scripts/run_synthetic_lambda.sh` | `outputs/theorem2_lambda_sweep_l2/runs/<timestamp>/params/*.npz` |
 | Figure 2 across several encoders at once | `bash scripts/run_multi_density.sh` | `outputs/multi_density/multi_density.pdf` |
@@ -63,6 +68,35 @@ python -m venv .venv && .venv/bin/pip install -e ".[test]"
 
 Every stage is idempotent. Rerunning a command skips any artifact that already
 exists, so an interrupted run resumes rather than restarting.
+
+---
+
+## The post-rebuttal run
+
+`configs/post_rebuttal/clip_b32.yaml` is the one configuration that produces
+every non-synthetic deliverable together. It pulls in the two pipeline configs
+beside it, `clip_b32_coco.yaml` for Figure 2 and `clip_b32_cc3m.yaml` for
+Table 1, and adds its own `rebuttal:` block: the co-activation threshold `tau`,
+the shuffle seed of the noise-floor panel, the number of bootstrap resamples,
+which of the two settings to analyse, which analyses to run, and the training
+seed of the second COCO model.
+
+It runs in four stages, all idempotent: `figure2`, `table1`, `rebuttal` and
+`report`. The `rebuttal` stage trains the second COCO model, builds the extra
+co-activation panels (image against image, text against text, text against a
+different caption, and the shuffled noise floor), then runs the eleven analyses
+registered in `src/rebuttal/registry.py`. Each analysis writes
+`<name>.json` with every number, `<name>.md` with a report that stands on its
+own, and a figure where the measurement has one. An analysis that raises does
+not stop the others: its traceback goes to `<name>.error.txt`, the rest still
+run, and the process exits non-zero naming what failed. The `report` stage
+gathers all of it, plus an inventory of every file produced, into
+`outputs/post_rebuttal/post_rebuttal_results.md`.
+
+`post_rebuttal_exp.md` at the repository root is the operating guide for that
+run: prerequisites, disk budget, the exact Docker commands, how long each part
+takes on one GPU, how to resume after an interruption, and what to send back.
+It is written in Korean.
 
 ---
 
@@ -282,17 +316,23 @@ two can never be confused.
 ```
 .
 ├── README.md, pyproject.toml, Dockerfile, docker/entrypoint.sh
+├── post_rebuttal_exp.md    operating guide for the post-rebuttal run (Korean)
 ├── run.py                  single entry point, dispatched on the config's kind
 ├── run_synthetic_v2.py     driver for the two synthetic sweeps
-├── scripts/                one wrapper per deliverable, plus docker_build
+├── scripts/                one wrapper per deliverable, docker_build, and
+│                           collect_deliverables (packs the archive to send)
 ├── configs/
-│   ├── post_rebuttal/      Table 1 and Figure 2 for CLIP ViT-B/32
+│   ├── post_rebuttal/      clip_b32.yaml (everything), plus the Figure 2 and
+│   │                       Table 1 configs it pulls in
 │   ├── cc3m/               _shared.yaml plus one override per encoder
 │   ├── multi_density.yaml  Figure 2 across several encoders
 │   ├── synthetic/          the two synthetic sweeps
 │   └── models/             encoder definitions
 ├── src/
-│   ├── pipelines/          synthetic_sweep | multi_density | cc3m_downstream
+│   ├── pipelines/          synthetic_sweep | multi_density | cc3m_downstream |
+│   │                       post_rebuttal (the four-stage run)
+│   ├── rebuttal/           one module per analysis, common.py (the shared
+│   │                       Setting and helpers), registry.py (what runs where)
 │   ├── data/               cache_io (the format), extract (the only extractor),
 │   │                       paired_dataset (the normalization rule), synthetic
 │   ├── datasets/           synthetic data builders
