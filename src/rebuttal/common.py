@@ -48,7 +48,10 @@ logger = logging.getLogger(__name__)
 #: The two settings analysed, in the order they are reported.
 SETTING_TAGS = ("coco_k8", "cc3m_k32")
 
-#: One-line description per setting, for report headings.
+#: One-line description per setting, for report headings. These are the values
+#: the shipped configuration trains; `Setting.title()` prefers the numbers of
+#: the configuration actually in hand, so that a report can never state a
+#: training length that was not run.
 SETTING_TITLES = {
     "coco_k8": ("COCO training split, 8 active latents per input, "
                 "total latent budget 8192 (4096 per modality), 30 epochs "
@@ -57,6 +60,11 @@ SETTING_TITLES = {
                  "total latent budget 8192 (4096 per modality), 10 epochs "
                  "(the paper's Table 1 point)"),
 }
+
+#: Corpus name and role per setting, the two parts of a title that do not come
+#: from the training numbers.
+SETTING_CORPUS = {"coco_k8": ("COCO", "the paper's Figure 2 point"),
+                  "cc3m_k32": ("CC3M", "the paper's Table 1 point")}
 
 #: URL of the COCO 2014 instance annotations, the external ground truth the
 #: COCO-80 tests need. 241 MB compressed.
@@ -135,7 +143,18 @@ class Setting:
         return self.panels_dir / f"{pairing}.npz"
 
     def title(self) -> str:
-        return SETTING_TITLES.get(self.tag, self.tag)
+        """One line naming the corpus and the training numbers of this setting.
+
+        Built from the fields rather than from a fixed string, so that a report
+        produced by a shortened run states that run's own number of epochs and
+        its own latent budget.
+        """
+        corpus, role = SETTING_CORPUS.get(self.tag, (self.dataset.upper(), self.tag))
+        epochs = int(self.num_epochs)
+        return (f"{corpus} training split, {int(self.k)} active latents per "
+                f"input, total latent budget {int(self.latent_size)} "
+                f"({self.latents_per_side} per modality), "
+                f"{epochs} epoch{'' if epochs == 1 else 's'} ({role})")
 
     def as_dict(self) -> dict[str, Any]:
         """Plain dict of the paths, so an analysis can record its provenance."""
@@ -561,6 +580,7 @@ __all__ = [
     "settings_from_config",
     "SETTING_TAGS",
     "SETTING_TITLES",
+    "SETTING_CORPUS",
     "load_panel_or_raise",
     "unit_decoder",
     "matched_distance",
