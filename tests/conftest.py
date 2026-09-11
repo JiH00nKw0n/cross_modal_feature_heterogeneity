@@ -19,11 +19,18 @@ def rng() -> np.random.Generator:
 
 
 def make_coco_cache(cache_dir: Path, *, n_images: int = 8, caps_per_image: int = 5,
-                    dim: int = 16, seed: int = 0) -> dict:
+                    dim: int = 16, seed: int = 0, n_val_images: int = 2,
+                    n_test_images: int = 2) -> dict:
     """A COCO-shaped paired cache: keys "{image_id}_{cap_idx}", train/val/test.
 
     The image row is duplicated across a photo's captions, which is the
     one-row-per-pair rule the real extractor follows.
+
+    The last `n_test_images` photographs go to the test split, the
+    `n_val_images` before them to the validation split, and everything earlier
+    to training. The two counts are parameters because a test that measures the
+    COCO test split needs more than the two photographs the default leaves
+    there.
     """
     gen = np.random.default_rng(seed)
     keys: list[str] = []
@@ -31,7 +38,9 @@ def make_coco_cache(cache_dir: Path, *, n_images: int = 8, caps_per_image: int =
     texts: list[np.ndarray] = []
     captions: dict[str, str] = {}
     splits: dict[str, list[str]] = {"train": [], "val": [], "test": []}
-    split_of = lambda i: "train" if i < n_images - 4 else ("val" if i < n_images - 2 else "test")  # noqa: E731
+    first_test = n_images - n_test_images
+    first_val = first_test - n_val_images
+    split_of = lambda i: "train" if i < first_val else ("val" if i < first_test else "test")  # noqa: E731
 
     for img_id in range(n_images):
         img_vec = gen.normal(size=dim).astype(np.float32)
