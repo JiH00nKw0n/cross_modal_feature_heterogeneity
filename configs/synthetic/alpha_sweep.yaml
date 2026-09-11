@@ -1,0 +1,42 @@
+# Fig 1 — α sweep (cos(φ_i, ψ_i) ∈ {0, 0.2, …, 1.0}), 1R vs 2R, 3 seeds, k=16, L=8192.
+# Standard paper-grade synthetic setup. CLIP-style: unit-L2-norm image/text embeddings.
+
+kind: synthetic_sweep
+
+data:
+  n_shared: 1024
+  n_image: 512
+  n_text: 512
+  representation_dim: 256
+  sparsity: 0.99
+  beta: 1.0
+  obs_noise_std: 0.05
+  max_interference: 0.30
+  num_train: 50_000
+  num_eval: 10_000
+  l2_normalize: true
+
+training:
+  lr: 5.0e-4
+  num_epochs: 10
+  batch_size: 256
+  weight_decay: 1.0e-5
+  max_grad_norm: 1.0
+  k: 16
+  latent_size: 8192
+  warmup_ratio: 0.05
+  device: cuda
+
+methods:
+  - {name: shared}
+  - {name: separated}
+
+sweep:
+  alpha: [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
+  latent_size: [8192]
+  num_seeds: 3
+  seed_base: 1
+
+output:
+  root: outputs/theorem2_alpha_sweep_l2
+  save_decoders: true

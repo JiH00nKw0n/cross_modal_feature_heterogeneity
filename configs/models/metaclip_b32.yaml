@@ -1,0 +1,7 @@
+key: metaclip_b32
+backend: transformers
+hf_id: facebook/metaclip-b32-400m
+hidden_size: 512
+text_max_length: 77
+is_siglip: false
+image_size: 224

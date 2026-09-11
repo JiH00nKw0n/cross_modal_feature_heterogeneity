@@ -1,0 +1,41 @@
+# Table 1 for CLIP ViT-B/32 trained on CC3M, over three seeds.
+#
+# Trains the five methods per seed, builds each seed's co-activation panel on
+# the FULL CC3M training split, then evaluates reconstruction, COCO retrieval
+# and ImageNet zero-shot and writes table1.md at the output root.
+
+kind: cc3m_downstream
+
+model: !ref ../models/clip_b32.yaml
+
+cache:
+  cache_dir: cache/clip_b32_cc3m
+  dataset: cc3m
+  split: train
+
+training:
+  lr: 5.0e-4
+  num_epochs: 10
+  batch_size: 1024
+  weight_decay: 1.0e-5
+  max_grad_norm: 1.0
+  k: 32
+  latent_size: 8192
+  warmup_ratio: 0.05
+  device: cuda
+  seed: 0
+  seeds: [0, 1, 2]
+
+methods: !ref ../cc3m/_shared.yaml#methods
+
+eval:
+  recon: true
+  retrieval: true
+  zeroshot: true
+  zeroshot_variant: raw
+  max_fire_rate: 0.5
+  recon_template_seed: 0
+
+output:
+  root: outputs/post_rebuttal/cc3m_clip_b32
+  save_decoders: true

@@ -1,0 +1,7 @@
+key: siglip2_large
+backend: transformers
+hf_id: google/siglip2-large-patch16-256
+hidden_size: 1024
+text_max_length: 64
+is_siglip: true
+image_size: 256

@@ -1,0 +1,51 @@
+# What the image must NOT receive. Docker does not read .gitignore, so without
+# this file `COPY . /app/repo` uploads the whole working copy as build context
+# and bakes it into the image layer: the local .venv alone is about 1.3 GB, and
+# a populated cache/ is tens of GB of .npy embeddings. Both are then installed
+# over again by the pip step on the next line, and every source edit
+# invalidates the COPY layer and repeats the copy.
+
+# Local virtualenvs
+.venv/
+venv/
+env/
+
+# Runtime artifacts. cache/ and outputs/ are bind-mounted at run time.
+cache/
+outputs/
+.cache/
+
+# Version control and tooling state
+.git/
+.gitignore
+.github/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.coverage
+.coverage.*
+htmlcov/
+
+# Python build leftovers
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+build/
+dist/
+
+# Editor and OS noise
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Logs and secrets
+*.log
+.log/
+.env
+.env.*

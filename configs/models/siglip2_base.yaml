@@ -1,0 +1,7 @@
+key: siglip2_base
+backend: transformers
+hf_id: google/siglip2-base-patch16-224
+hidden_size: 768
+text_max_length: 64
+is_siglip: true
+image_size: 224

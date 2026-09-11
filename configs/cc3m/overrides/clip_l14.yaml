@@ -1,0 +1,12 @@
+kind: cc3m_downstream
+model: !ref ../../models/clip_l14.yaml
+cache:
+  cache_dir: cache/clip_l14_cc3m
+  dataset: cc3m
+  split: train
+training: !ref ../_shared.yaml#training
+methods: !ref ../_shared.yaml#methods
+eval: !ref ../_shared.yaml#eval
+output:
+  root: outputs/cc3m_clip_l14
+  save_decoders: true

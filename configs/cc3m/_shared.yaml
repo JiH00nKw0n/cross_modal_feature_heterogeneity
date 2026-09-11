@@ -1,0 +1,37 @@
+# Shared CC3M downstream defaults. Per-model files extend this with !ref and
+# override `model` and `output.root`.
+#
+# latent_size is the TOTAL latent budget: a modality-specific model splits it,
+# so 8192 gives 4096 latents per modality.
+
+training:
+  lr: 5.0e-4
+  num_epochs: 10
+  batch_size: 1024
+  weight_decay: 1.0e-5
+  max_grad_norm: 1.0
+  k: 32
+  latent_size: 8192
+  warmup_ratio: 0.05
+  device: cuda
+  seed: 0
+  seeds: [0]
+
+methods:
+  - {name: shared,       aux_weight: 0.0}
+  - {name: separated,    aux_weight: 0.0}
+  - {name: iso_align,    aux_weight: 1.0e-4}
+  - {name: group_sparse, aux_weight: 0.05}
+  - {name: ours,         aux_weight: 0.0}
+
+eval:
+  recon: true
+  retrieval: true
+  zeroshot: true
+  # "raw" scores every latent column and is the variant Table 1 reports.
+  # "filtered" drops columns whose image-side firing rate exceeds max_fire_rate.
+  zeroshot_variant: raw
+  max_fire_rate: 0.5
+  # Seed for the one template drawn per ImageNet validation image in the
+  # reconstruction evaluation.
+  recon_template_seed: 0

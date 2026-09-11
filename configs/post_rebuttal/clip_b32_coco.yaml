@@ -1,0 +1,31 @@
+# Figure 2 for CLIP ViT-B/32 on COCO.
+#
+# Trains one modality-specific SAE (k = 8, total latent budget 8192, so 4096
+# per modality, 30 epochs), builds the co-activation panel on the FULL COCO
+# training split, then draws the density figure over ALL latent pairs.
+
+kind: multi_density
+
+models:
+  - !ref ../models/clip_b32.yaml
+
+cache:
+  cache_dir: cache/{key}_coco       # {key} is replaced per model
+  dataset: coco
+  split: train
+
+training:
+  lr: 5.0e-4
+  num_epochs: 30
+  batch_size: 1024
+  weight_decay: 1.0e-5
+  max_grad_norm: 1.0
+  k: 8
+  latent_size: 8192
+  warmup_ratio: 0.05
+  device: cuda
+  seed: 0
+  seeds: [0]
+
+output:
+  root: outputs/post_rebuttal/coco_clip_b32
