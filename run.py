@@ -40,8 +40,14 @@ def main() -> None:
 
     logging.basicConfig(
         level=args.log_level,
-        format="%(asctime)s %(levelname)s %(name)s — %(message)s",
+        format="%(asctime)s %(levelname)s %(name)s - %(message)s",
     )
+    # The Hugging Face streaming reader issues one HTTP range request per
+    # parquet row group and logs each at INFO through httpx. Over a full COCO or
+    # CC3M pass that is tens of thousands of lines that bury the progress lines
+    # this code prints, so the HTTP client libraries are held at WARNING.
+    for noisy in ("httpx", "httpcore", "urllib3", "filelock", "fsspec"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
     logger = logging.getLogger("run")
     logger.info("Loading config: %s", args.config)
     cfg = load_config(args.config)
