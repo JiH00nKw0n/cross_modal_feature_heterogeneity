@@ -78,8 +78,9 @@ instead of three. Asking COCO for a slice also switches its source to streaming
 parquet reads, which fetch only the row groups they consume, so the 20 GB
 parquet set is never downloaded.
 
-Expect roughly 20 to 40 minutes on one GPU. That is an estimate from the size
-of each slice, not a measured figure. The run writes
+Measured once on an A100 40 GB slice, the whole smoke run took about 15
+minutes end to end, 9 of them streaming the three COCO splits, so expect 10 to
+30 minutes depending on network speed. The run writes
 `outputs/post_rebuttal_smoke/post_rebuttal_results.md`, which has every section
 the full run's report has and no section marked missing. Its caches live under
 `cache/smoke/` and its outputs under `outputs/post_rebuttal_smoke/`, both

@@ -16,8 +16,9 @@
 #   training  2 epochs on COCO instead of 30, 1 epoch on CC3M instead of 10,
 #             and two CC3M seeds instead of three
 #
-# Rough cost: about 20 to 40 minutes on one GPU. That is an estimate from the
-# size of each slice, not a measured figure.
+# Measured cost: about 15 minutes end to end on one A100 40 GB slice, 9 of
+# them spent streaming the three COCO splits, so expect 10 to 30 minutes
+# depending on network speed.
 #
 # Everything it writes is separate from the full run. Outputs land under
 # outputs/post_rebuttal_smoke/ and caches under cache/smoke/, and both can be
