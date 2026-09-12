@@ -141,12 +141,17 @@ def cache_slice_mismatch(cache_dir: str | Path, max_samples: int | None) -> str 
 
     Every extractor records how much of its corpus it took, as `max_samples` in
     meta.json: None for the whole corpus, an integer for the first that many
-    source records. A sliced cache has exactly the shape of a full one, only
-    fewer rows, so nothing downstream can tell the difference on its own, and a
-    full run that reused a slice left behind by a quick check would train on
-    that slice and report its numbers as the full result. A cache written
-    before this field existed carries no `max_samples` key and is read as a
-    full one, which is what it is.
+    source records. An extractor whose parts directory already holds more
+    source records than the slice being asked for refuses rather than assemble
+    a cache larger than the number it is about to record, so the recorded value
+    is never smaller than what the cache holds.
+
+    A sliced cache has exactly the shape of a full one, only fewer rows, so
+    nothing downstream can tell the difference on its own, and a full run that
+    reused a slice left behind by a quick check would train on that slice and
+    report its numbers as the full result. A cache written before this field
+    existed carries no `max_samples` key and is read as a full one, which is
+    what it is.
 
     The fix is always the same, and the returned sentence says it: delete the
     cache directory and run again, or ask for the slice the cache holds.

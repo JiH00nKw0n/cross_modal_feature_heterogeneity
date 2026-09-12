@@ -15,7 +15,9 @@ checked here.
 
   A sliced cache cannot be mistaken for a full one. Every extractor records its
   slice in meta.json, and a pipeline whose config asks for something else
-  refuses by name rather than training on what it found.
+  refuses by name rather than training on what it found. The refusal covers
+  exactly the caches a run reads: a cache no configured evaluation opens is not
+  checked, and the rebuttal stage checks its own caches even when it runs alone.
 
 Nothing is downloaded and no encoder is loaded: the source dataset and the
 encoder are both stubs.
@@ -32,8 +34,17 @@ from PIL import Image
 
 from src.data import extract
 from src.data.cache_io import cache_slice_mismatch, require_cache_slice
-from src.utils.config import CacheConfig, EvalConfig, ModelConfig, load_config
-from tests.conftest import make_coco_cache
+from src.utils.config import (
+    CacheConfig,
+    Config,
+    EvalConfig,
+    MethodConfig,
+    ModelConfig,
+    OutputConfig,
+    TrainingConfig,
+    load_config,
+)
+from tests.conftest import make_coco_cache, make_imagenet_cache
 
 CONFIGS = Path(__file__).resolve().parents[1] / "configs"
 
@@ -457,3 +468,162 @@ def test_the_coco80_threshold_reaches_the_analyses_only_when_it_is_set(
     cfg.rebuttal.coco80_min_count = 20
     post_rebuttal_run(cfg, stage="rebuttal")
     assert seen[-1]["min_count"] == 20
+
+
+# --------------------------------------------------------------------------- #
+# the refusal covers exactly the caches a run reads
+# --------------------------------------------------------------------------- #
+def _record_slice(cache_dir: Path, max_samples: int | None) -> None:
+    """Set the slice a finished fixture cache claims to hold."""
+    meta = json.loads((cache_dir / "meta.json").read_text())
+    meta["max_samples"] = max_samples
+    (cache_dir / "meta.json").write_text(json.dumps(meta))
+
+
+def _eval_only_config(tmp_path: Path, **eval_kw) -> Config:
+    """A cc3m_downstream config whose evaluation caches are the smoke ones.
+
+    No checkpoint is placed, so every method is skipped and the stage runs only
+    the cache checks and the two on-demand extractions.
+    """
+    return Config(
+        kind="cc3m_downstream",
+        model=ModelConfig(key="clip_b32", backend="transformers", hidden_size=DIM),
+        cache=CacheConfig(cache_dir="cache/smoke/clip_b32_cc3m", dataset="cc3m",
+                          split="train"),
+        training=TrainingConfig(seed=0, seeds=[0], lr=1e-3, num_epochs=1,
+                                batch_size=8, k=2, latent_size=8, device="cpu"),
+        methods=[MethodConfig(name="separated")],
+        eval=EvalConfig(max_samples=2000, coco_cache_dir="cache/smoke/{key}_coco",
+                        **eval_kw),
+        output=OutputConfig(root=str(tmp_path / "out")),
+    )
+
+
+def test_an_imagenet_cache_that_no_evaluation_reads_is_not_checked(
+        tmp_path: Path, monkeypatch) -> None:
+    """A run with both ImageNet evaluations off ignores the ImageNet cache.
+
+    This is the combination a collaborator without a Hugging Face token is told
+    to use. Refusing it over the slice of a full ImageNet cache the run never
+    opens would leave two wrong ways out: delete a multi-gigabyte cache that is
+    not being used, or widen the slice of the caches that are.
+    """
+    from src.pipelines import cc3m_downstream
+
+    monkeypatch.chdir(tmp_path)
+    coco_dir = tmp_path / "cache" / "smoke" / "clip_b32_coco"
+    make_coco_cache(coco_dir, n_images=4, caps_per_image=2, dim=DIM)
+    _record_slice(coco_dir, 2000)
+    make_imagenet_cache(tmp_path / "cache" / "clip_b32_imagenet", n_images=4,
+                        n_classes=2, n_templates=2, dim=DIM)   # the whole corpus
+    monkeypatch.setattr(extract, "extract_imagenet",
+                        lambda **kw: pytest.fail("ImageNet must not be extracted"))
+
+    cfg = _eval_only_config(tmp_path, recon=True, retrieval=True, zeroshot=False,
+                            recon_imagenet=False)
+    cc3m_downstream._eval_stage(cfg, tmp_path / "out" / "seed0")
+
+
+def test_an_imagenet_cache_an_evaluation_reads_is_still_refused(
+        tmp_path: Path, monkeypatch) -> None:
+    """With zero-shot on, the same mismatched ImageNet cache stops the run."""
+    from src.pipelines import cc3m_downstream
+
+    monkeypatch.chdir(tmp_path)
+    coco_dir = tmp_path / "cache" / "smoke" / "clip_b32_coco"
+    make_coco_cache(coco_dir, n_images=4, caps_per_image=2, dim=DIM)
+    _record_slice(coco_dir, 2000)
+    make_imagenet_cache(tmp_path / "cache" / "clip_b32_imagenet", n_images=4,
+                        n_classes=2, n_templates=2, dim=DIM)
+
+    cfg = _eval_only_config(tmp_path, recon=False, retrieval=True, zeroshot=True)
+    with pytest.raises(ValueError, match="clip_b32_imagenet"):
+        cc3m_downstream._eval_stage(cfg, tmp_path / "out" / "seed0")
+
+
+def test_a_coco_cache_no_evaluation_reads_is_not_checked(
+        tmp_path: Path, monkeypatch) -> None:
+    """The COCO cache is checked under the same rule as the ImageNet one."""
+    from src.pipelines import cc3m_downstream
+
+    monkeypatch.chdir(tmp_path)
+    coco_dir = tmp_path / "cache" / "smoke" / "clip_b32_coco"
+    make_coco_cache(coco_dir, n_images=4, caps_per_image=2, dim=DIM)   # full
+    monkeypatch.setattr(extract, "extract_coco",
+                        lambda **kw: pytest.fail("COCO must not be extracted"))
+
+    cfg = _eval_only_config(tmp_path, recon=False, retrieval=False, zeroshot=False,
+                            recon_imagenet=False)
+    cc3m_downstream._eval_stage(cfg, tmp_path / "out" / "seed0")
+
+
+def test_a_slice_smaller_than_an_interrupted_pass_is_refused(
+        tmp_path: Path, coco_source, monkeypatch) -> None:
+    """A resume cannot assemble more source records than meta.json will record.
+
+    A pass killed before assembly leaves its chunk files behind. A later pass
+    asking for a smaller slice skips every one of those records and takes
+    nothing further, so it would assemble the larger cache and label it with the
+    smaller number, which every later check reads. It refuses instead.
+    """
+    cache_dir = tmp_path / "coco"
+    model = _model_cfg()
+
+    def killed_before_assembly(*args, **kwargs):
+        raise RuntimeError("killed before assembly")
+
+    monkeypatch.setattr(extract, "_assemble", killed_before_assembly)
+    with pytest.raises(RuntimeError, match="killed before assembly"):
+        extract.extract_coco(model_cfg=model, cache_dir=cache_dir, batch_size=2,
+                             device="cpu")                      # all 5 per split
+    monkeypatch.undo()
+    monkeypatch.setattr(extract, "load_encoder", lambda *a, **k: _StubEncoder())
+
+    with pytest.raises(ValueError, match="already holds 5 source records"):
+        extract.extract_coco(model_cfg=model, cache_dir=cache_dir, batch_size=2,
+                             device="cpu", max_groups_per_split=2)
+    assert not (cache_dir / "meta.json").exists(), "a cache was written anyway"
+
+    # The message names the two ways out. Asking for at least what is cached
+    # finishes the pass, and the cache then holds no more than it records.
+    extract.extract_coco(model_cfg=model, cache_dir=cache_dir, batch_size=2,
+                         device="cpu", max_groups_per_split=5)
+    splits = json.loads((cache_dir / "splits.json").read_text())
+    assert {k: len(v) for k, v in splits.items()} == \
+        {"train": 10, "val": 10, "test": 10}
+    assert json.loads((cache_dir / "meta.json").read_text())["max_samples"] == 5
+
+
+def test_the_rebuttal_stage_refuses_a_cache_from_another_slice(
+        tmp_path: Path, monkeypatch) -> None:
+    """`--stage rebuttal` alone runs neither pipeline, so it checks for itself.
+
+    A sliced COCO cache left at the full run's path, by someone who asked for a
+    slice for a quick check and then took the knob back out, would otherwise be
+    trained on by model B and reported as the full result.
+    """
+    from src.pipelines.post_rebuttal import run as post_rebuttal_run
+    from src.rebuttal import registry
+    from tests.test_post_rebuttal_smoke import _place_checkpoints, _tiny_config
+
+    monkeypatch.chdir(tmp_path)
+    # The analyses themselves are not what this test measures, and they read
+    # the Figure 2 panel, which only that pipeline writes.
+    monkeypatch.setattr(registry, "ANALYSES", [])
+    coco_dir = tmp_path / "cache" / "clip_b32_coco"
+    make_coco_cache(coco_dir, n_images=8, caps_per_image=2, dim=16)
+    _record_slice(coco_dir, 2000)
+
+    cfg = _tiny_config(tmp_path)             # asks for the whole corpus
+    cfg.rebuttal.settings = ["coco_k8"]
+    _place_checkpoints(cfg)
+    with pytest.raises(ValueError, match="clip_b32_coco"):
+        post_rebuttal_run(cfg, stage="rebuttal")
+    assert not (tmp_path / "out" / "rebuttal" / "coco_k8" / "seed1").exists(), \
+        "model B was trained on a cache from another slice"
+
+    # The same stage runs once the config asks for what the cache holds.
+    cfg.figure2.cache.max_samples = 2000
+    post_rebuttal_run(cfg, stage="rebuttal")
+    assert (tmp_path / "out" / "rebuttal" / "coco_k8" / "panels").exists()

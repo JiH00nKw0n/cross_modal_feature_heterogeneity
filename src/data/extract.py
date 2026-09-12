@@ -231,6 +231,35 @@ class _ChunkWriter:
         return keys
 
 
+def _refuse_slice_smaller_than_resume(
+    parts_dir: Path, groups_done: int, max_groups: int | None, *, what: str,
+) -> None:
+    """Refuse a slice that an interrupted pass has already overshot.
+
+    A resumed extraction skips the source records already on disk and takes
+    only the remainder of the slice on top, so a parts directory that already
+    holds more records than the slice asks for contributes every one of them
+    and takes nothing further. The assembled cache would then hold more source
+    records than the `max_samples` written into its meta.json, and
+    `src.data.cache_io.cache_slice_mismatch` reads exactly that number, so
+    nothing downstream could tell the cache apart from the smaller one it
+    claims to be. Refusing here keeps `max_samples` an upper bound on what the
+    cache holds, which is what every later check assumes.
+
+    A full extraction, `max_groups is None`, always runs its source to the end,
+    so it has nothing to overshoot and is never refused.
+    """
+    if max_groups is None or groups_done <= max_groups:
+        return
+    raise ValueError(
+        f"{what}: {parts_dir} already holds {groups_done:,} source records from an "
+        f"earlier pass, which is more than the {max_groups:,} this run asks for. "
+        f"The cache assembled from it would hold more than its meta.json records. "
+        f"Delete {parts_dir} and run again to extract the smaller slice afresh, or "
+        f"ask for at least {groups_done:,} source records."
+    )
+
+
 def _assemble(chunk_paths: list[Path], out_path: Path, *, total_rows: int, dim: int) -> None:
     """Concatenate chunk files into one .npy without holding two copies in RAM."""
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -447,6 +476,9 @@ def extract_coco(
 
     for src_split, cache_split in COCO_SPLIT_MAP.items():
         writer = _ChunkWriter(cache_dir / "parts" / cache_split)
+        _refuse_slice_smaller_than_resume(
+            writer.parts_dir, writer.groups_done, max_groups_per_split,
+            what=f"coco/{cache_split}")
         hint = None if max_groups_per_split is not None else COCO_ROW_HINTS.get(cache_split)
         rate = _RateLogger(f"coco/{cache_split}", hint)
         rate.start_at(writer.rows_done)
@@ -577,6 +609,8 @@ def extract_cc3m(
 
     encoder = load_encoder(model_cfg, device=device)
     writer = _ChunkWriter(cache_dir / "parts" / split)
+    _refuse_slice_smaller_than_resume(writer.parts_dir, writer.groups_done,
+                                      max_samples, what=f"cc3m/{split}")
     rate = _RateLogger(f"cc3m/{split}", max_samples or CC3M_TOTAL_HINT)
     rate.start_at(writer.rows_done)
 
@@ -707,6 +741,8 @@ def extract_imagenet(
 
     parts_dir = cache_dir / "parts" / split
     writer = _ChunkWriter(parts_dir)
+    _refuse_slice_smaller_than_resume(parts_dir, writer.groups_done, max_samples,
+                                      what=f"imagenet/{split}")
     rate = _RateLogger(f"imagenet/{split}", max_samples or IMAGENET_VAL_HINT)
     rate.start_at(writer.rows_done)
 

@@ -8,9 +8,12 @@ Stages (selected with `--stage`):
   table1    The CC3M downstream table. Delegates to
             `src.pipelines.cc3m_downstream` on `cfg.table1`, which trains every
             method for every seed and writes each seed's panel.
-  rebuttal  Trains the second COCO model, the independent run the same-modality
-            comparisons need; builds the extra co-activation panels; then runs
-            every registered analysis on every configured setting.
+  rebuttal  Checks that every cache it is about to read holds the slice the
+            config asks for, since this stage runs neither pipeline and is
+            often re-run on its own; trains the second COCO model, the
+            independent run the same-modality comparisons need; builds the
+            extra co-activation panels; then runs every registered analysis on
+            every configured setting.
   report    Gathers an inventory of every file produced, Table 1, the Figure 2
             per-band statistics and each analysis report into one file at
             `<root>/post_rebuttal_results.md`.
@@ -57,6 +60,7 @@ import traceback
 from pathlib import Path
 
 from src.alignment import build_panel, load_panel, panel_mismatch, save_panel
+from src.data.cache_io import require_cache_slice
 from src.rebuttal.common import Setting, settings_from_config
 from src.rebuttal.registry import Analysis, analyses_for, question_for
 from src.utils.config import Config, MethodConfig
@@ -164,6 +168,15 @@ def _rebuttal_stage(cfg: Config) -> list[tuple[str, str, Path]]:
         logger.warning("[post_rebuttal] cfg.rebuttal.settings selects no setting")
         return []
 
+    # Every cache this stage reads is checked before the first model is
+    # trained. `--stage rebuttal` on its own runs neither of the two pipelines
+    # that carry the other slice checks, and it is the stage the instructions
+    # tell an operator to re-run alone, so without this a slice left at the
+    # full run's cache path would be trained on and reported as the full
+    # result.
+    for setting in settings.values():
+        _require_cache_slices(cfg, setting)
+
     _train_second_coco_model(cfg, settings.get("coco_k8"))
 
     failures: list[tuple[str, str, Path]] = []
@@ -187,6 +200,29 @@ def _training_for(cfg: Config, setting: Setting):
     was lowered in the config that governs that corpus.
     """
     return cfg.table1.training if setting.dataset == "cc3m" else cfg.figure2.training
+
+
+def _cache_for(cfg: Config, setting: Setting):
+    """The cache block whose slice governs this setting's training cache.
+
+    The same split as `_training_for`: the CC3M setting reads the Table 1
+    config, the COCO setting the Figure 2 one, because those are the pipelines
+    that extracted the two caches.
+    """
+    return cfg.table1.cache if setting.dataset == "cc3m" else cfg.figure2.cache
+
+
+def _require_cache_slices(cfg: Config, setting: Setting) -> None:
+    """Refuse when a cache this setting reads holds a different slice.
+
+    Two caches are checked. `cache_dir` is the corpus the setting's models were
+    trained on and every panel is built from. `coco_cache` is the COCO cache the
+    two COCO-80 analyses read for the test split and its captions, which is the
+    Figure 2 cache for both settings, so it is checked against the Figure 2
+    slice even under the CC3M setting.
+    """
+    require_cache_slice(setting.cache_dir, _cache_for(cfg, setting).max_samples)
+    require_cache_slice(setting.coco_cache, cfg.figure2.cache.max_samples)
 
 
 def _train_second_coco_model(cfg: Config, setting: Setting | None) -> None:

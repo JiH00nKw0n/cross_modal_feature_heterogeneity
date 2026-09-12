@@ -183,12 +183,20 @@ def _eval_stage(cfg: Config, seed_root: Path) -> None:
 
     coco_cache = _coco_cache_dir(eval_cfg, model_cfg.key)
     inet_cache = _imagenet_cache_dir(eval_cfg, model_cfg.key)
-    # Both evaluation caches are extracted on demand below, so both are checked
-    # here: one built from a different slice would otherwise be evaluated on
-    # silently, and its recall and accuracy are not comparable with the full
-    # run's.
-    require_cache_slice(coco_cache, eval_cfg.max_samples)
-    require_cache_slice(inet_cache, eval_cfg.max_samples)
+    wants_coco = bool(eval_cfg.retrieval or eval_cfg.recon)
+    wants_inet = _wants_imagenet(eval_cfg)
+    # Each evaluation cache is checked under the same condition that extracts
+    # it below, so a cache built from a different slice is never evaluated on
+    # silently: its recall and accuracy are not comparable with the full run's.
+    # Checking a cache no configured evaluation opens would be worse than
+    # useless. A run with both ImageNet evaluations off would be refused over
+    # the full ImageNet cache it never reads, and both ways out of that refusal
+    # are wrong: deleting a multi-gigabyte cache this run does not need, or
+    # widening the slice of the caches it does need.
+    if wants_coco:
+        require_cache_slice(coco_cache, eval_cfg.max_samples)
+    if wants_inet:
+        require_cache_slice(inet_cache, eval_cfg.max_samples)
 
     # `ours` is the separated checkpoint plus the permutation, so it cannot be
     # evaluated without the panel. Check before anything runs: the retrieval
@@ -205,11 +213,11 @@ def _eval_stage(cfg: Config, seed_root: Path) -> None:
             "use --stage all, which runs it in order."
         )
 
-    if (eval_cfg.retrieval or eval_cfg.recon) and not paired_cache_complete(coco_cache):
+    if wants_coco and not paired_cache_complete(coco_cache):
         extract_coco(model_cfg=model_cfg, cache_dir=coco_cache,
                      device=cfg.training.device,
                      max_groups_per_split=eval_cfg.max_samples)
-    if _wants_imagenet(eval_cfg) and not imagenet_cache_complete(inet_cache):
+    if wants_inet and not imagenet_cache_complete(inet_cache):
         extract_imagenet(model_cfg=model_cfg, cache_dir=inet_cache,
                          device=cfg.training.device,
                          max_samples=eval_cfg.max_samples)
