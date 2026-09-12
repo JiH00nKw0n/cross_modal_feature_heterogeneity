@@ -1,0 +1,57 @@
+# The smoke run: the whole post-rebuttal pipeline on a slice of the real data.
+#
+# Run this once before configs/post_rebuttal/clip_b32.yaml. It goes through the
+# same four stages, with the same encoder, the same number of active latents
+# per input and the same total latent budget, so every code path that touches
+# the real Hugging Face data, the GPU and the 4096 by 4096 co-activation panel
+# is exercised. What it changes is how much data each stage reads and how long
+# each model is trained.
+#
+# What is sliced, and to what:
+#   COCO      the first 2,000 photographs of each split, about 10,000 training
+#             pairs and 2,000 test photographs, read as a stream so the 20 GB
+#             parquet set is never downloaded
+#   CC3M      the first 6,000 image-caption pairs off the stream
+#   ImageNet  the first 2,000 validation images
+#   training  2 epochs on COCO instead of 30, 1 epoch on CC3M instead of 10,
+#             and two CC3M seeds instead of three
+#
+# Rough cost: about 20 to 40 minutes on one GPU. That is an estimate from the
+# size of each slice, not a measured figure.
+#
+# Everything it writes is separate from the full run. Outputs land under
+# outputs/post_rebuttal_smoke/ and caches under cache/smoke/, and both can be
+# deleted once the smoke run has passed. The sliced caches record their slice,
+# so the full run refuses to train on one by mistake rather than reporting the
+# slice's numbers as the full result.
+
+kind: post_rebuttal
+
+figure2: !ref smoke_coco.yaml
+table1: !ref smoke_cc3m.yaml
+
+rebuttal:
+  # Co-activation correlation a latent pair has to reach before its two
+  # feature directions are compared. Same as the full run.
+  tau: 0.4
+  # Row shuffle that destroys the image-to-caption pairing, giving the noise
+  # floor panel. Must not be 0, which means "do not shuffle".
+  null_seed: 7
+  # Bootstrap resamples behind every confidence interval. 200 rather than the
+  # full run's 2000: the intervals here are not results, they only have to be
+  # computed once so the code path is proven.
+  n_boot: 200
+  # Positives an object category needs in each half of the COCO test split
+  # before the two COCO-80 analyses score it. The full run leaves this out and
+  # each analysis uses its own default of 50, which needs the whole 5,000-photo
+  # test split. This slice holds 2,000 photographs, so the threshold is lowered
+  # to keep enough categories for the two analyses to report rather than raise.
+  coco80_min_count: 20
+  settings: [coco_k8, cc3m_k32]
+  analyses: [all]
+  # Training seed of the second COCO model, the independent run the
+  # same-modality comparisons need. The figure2 config trains seed 0.
+  coco_seed_b: 1
+
+output:
+  root: outputs/post_rebuttal_smoke

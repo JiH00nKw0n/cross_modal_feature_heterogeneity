@@ -49,6 +49,55 @@ python -m venv .venv && .venv/bin/pip install -e ".[test]"
 
 ---
 
+## Smoke run first
+
+`configs/post_rebuttal/smoke.yaml` runs the whole post-rebuttal pipeline, all
+four stages in order, on a small slice of the real Hugging Face data. The
+encoder is the real one, the number of active latents per input and the total
+latent budget are the full run's, and the co-activation panel is the same 4096
+by 4096 matrix, so every code path that touches real data, the GPU and that
+panel is proven before the full run starts.
+
+```bash
+# Local
+.venv/bin/python run.py configs/post_rebuttal/smoke.yaml
+
+# Docker
+docker run --rm --gpus all \
+  -e HF_TOKEN=$HF_TOKEN \
+  -e CONFIG=configs/post_rebuttal/smoke.yaml \
+  -v $PWD/cache:/app/repo/cache -v $PWD/outputs:/app/repo/outputs \
+  vlm-sae
+```
+
+What it slices: the first 2,000 COCO photographs of each split, which is about
+10,000 training pairs and 2,000 test photographs; the first 6,000 CC3M
+image-caption pairs; the first 2,000 ImageNet validation images. It trains 2
+epochs on COCO instead of 30, 1 epoch on CC3M instead of 10, and two CC3M seeds
+instead of three. Asking COCO for a slice also switches its source to streaming
+parquet reads, which fetch only the row groups they consume, so the 20 GB
+parquet set is never downloaded.
+
+Expect roughly 20 to 40 minutes on one GPU. That is an estimate from the size
+of each slice, not a measured figure. The run writes
+`outputs/post_rebuttal_smoke/post_rebuttal_results.md`, which has every section
+the full run's report has and no section marked missing. Its caches live under
+`cache/smoke/` and its outputs under `outputs/post_rebuttal_smoke/`, both
+separate from the full run, and both can be deleted once it has passed.
+
+With no Hugging Face token, set `eval.zeroshot: false` and
+`eval.recon_imagenet: false` in `configs/post_rebuttal/smoke_cc3m.yaml`. Those
+two are the only evaluations that read the ImageNet cache, so with both off it
+is never extracted, and Table 1 prints `--` in its two ImageNet columns while
+every other column is real.
+
+Every cache records how much of its corpus it holds, as `max_samples` in its
+`meta.json`. A pipeline that finds a cache built from a different slice refuses
+and names the directory to delete, rather than training on the slice and
+reporting its numbers as the full result.
+
+---
+
 ## The deliverables and how to produce them
 
 | Deliverable | Command | Output |
@@ -323,7 +372,8 @@ two can never be confused.
 │                           collect_deliverables (packs the archive to send)
 ├── configs/
 │   ├── post_rebuttal/      clip_b32.yaml (everything), plus the Figure 2 and
-│   │                       Table 1 configs it pulls in
+│   │                       Table 1 configs it pulls in, and smoke.yaml with
+│   │                       its two, the same run on a slice of the data
 │   ├── cc3m/               _shared.yaml plus one override per encoder
 │   ├── multi_density.yaml  Figure 2 across several encoders
 │   ├── synthetic/          the two synthetic sweeps

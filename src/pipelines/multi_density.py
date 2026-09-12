@@ -26,6 +26,7 @@ from pathlib import Path
 import numpy as np
 
 from src.alignment import build_panel, load_panel, panel_mismatch, save_panel
+from src.data.cache_io import require_cache_slice
 from src.data.extract import extract_cache
 from src.training.trainer import train_method
 from src.utils.config import CacheConfig, Config, MethodConfig, ModelConfig
@@ -57,6 +58,7 @@ def _cache_for(cfg: Config, model_cfg: ModelConfig) -> CacheConfig:
         cache_dir=cfg.cache.cache_dir.replace("{key}", model_cfg.key),
         dataset=cfg.cache.dataset,
         split=cfg.cache.split,
+        max_samples=cfg.cache.max_samples,
     )
 
 
@@ -80,9 +82,14 @@ def run(cfg: Config, stage: str = "all") -> None:
         m_root = out_root / model_cfg.key
         cache = _cache_for(cfg, model_cfg)
 
+        # Refused before anything reads the cache, so that a slice left behind
+        # by a smoke run is never trained on as if it were the whole corpus.
+        require_cache_slice(cache.cache_dir, cache.max_samples)
+
         if stage in ("all", "extract"):
             extract_cache(model_cfg=model_cfg, cache_cfg=cache,
-                          batch_size=64, device=cfg.training.device)
+                          batch_size=64, device=cfg.training.device,
+                          max_samples=cache.max_samples)
         if stage == "extract":
             continue
 

@@ -12,7 +12,9 @@ Stages (selected with `--stage`):
            under the older name).
   eval     Extracts the COCO and ImageNet caches on demand, then runs the
            reconstruction, retrieval and zero-shot evaluations per method into
-           `<root>/seed{S}/eval/<method>/`.
+           `<root>/seed{S}/eval/<method>/`. The ImageNet cache is extracted
+           only when an evaluation reads it, which is zero-shot classification
+           or the ImageNet half of reconstruction.
   table    `<root>/table1.md` and `<root>/table1.tex` across all seeds.
 
 Every stage is idempotent: an artifact that already exists is not rebuilt.
@@ -30,10 +32,11 @@ from dataclasses import asdict
 from pathlib import Path
 
 from src.alignment import build_panel, load_panel, panel_mismatch, save_panel
+from src.data.cache_io import require_cache_slice
 from src.data.extract import extract_cache
 from src.reporting.table1 import zeroshot_filename
 from src.training.trainer import train_method
-from src.utils.config import Config, ModelConfig
+from src.utils.config import Config, EvalConfig, ModelConfig
 
 logger = logging.getLogger(__name__)
 
@@ -43,12 +46,24 @@ logger = logging.getLogger(__name__)
 STAGES = ("all", "extract", "train", "perm", "eval", "table")
 
 
-def _coco_cache_dir(model_key: str) -> Path:
-    return Path(f"cache/{model_key}_coco")
+def _coco_cache_dir(eval_cfg: EvalConfig, model_key: str) -> Path:
+    """Where the COCO evaluation cache lives, with `{key}` filled in."""
+    return Path(eval_cfg.coco_cache_dir.replace("{key}", model_key))
 
 
-def _imagenet_cache_dir(model_key: str) -> Path:
-    return Path(f"cache/{model_key}_imagenet")
+def _imagenet_cache_dir(eval_cfg: EvalConfig, model_key: str) -> Path:
+    """Where the ImageNet evaluation cache lives, with `{key}` filled in."""
+    return Path(eval_cfg.imagenet_cache_dir.replace("{key}", model_key))
+
+
+def _wants_imagenet(eval_cfg: EvalConfig) -> bool:
+    """Whether any configured evaluation reads the ImageNet cache.
+
+    Two do: zero-shot classification, and the ImageNet half of the
+    reconstruction evaluation. With both off, the cache is never extracted, and
+    the run needs no Hugging Face token.
+    """
+    return bool(eval_cfg.zeroshot or (eval_cfg.recon and eval_cfg.recon_imagenet))
 
 
 def run(cfg: Config, stage: str = "all") -> None:
@@ -64,9 +79,14 @@ def run(cfg: Config, stage: str = "all") -> None:
     seeds = cfg.training.resolved_seeds()
     logger.info("[cc3m] seeds=%s methods=%s", seeds, [m.name for m in cfg.methods])
 
+    # Refused before anything reads the cache, so that a slice left behind by a
+    # smoke run is never trained on as if it were the whole corpus.
+    require_cache_slice(cfg.cache.cache_dir, cfg.cache.max_samples)
+
     if stage in ("all", "extract"):
         extract_cache(model_cfg=cfg.model, cache_cfg=cfg.cache,
-                      batch_size=64, device=cfg.training.device)
+                      batch_size=64, device=cfg.training.device,
+                      max_samples=cfg.cache.max_samples)
     if stage == "extract":
         return
 
@@ -161,8 +181,14 @@ def _eval_stage(cfg: Config, seed_root: Path) -> None:
     eval_root = seed_root / "eval"
     eval_root.mkdir(parents=True, exist_ok=True)
 
-    coco_cache = _coco_cache_dir(model_cfg.key)
-    inet_cache = _imagenet_cache_dir(model_cfg.key)
+    coco_cache = _coco_cache_dir(eval_cfg, model_cfg.key)
+    inet_cache = _imagenet_cache_dir(eval_cfg, model_cfg.key)
+    # Both evaluation caches are extracted on demand below, so both are checked
+    # here: one built from a different slice would otherwise be evaluated on
+    # silently, and its recall and accuracy are not comparable with the full
+    # run's.
+    require_cache_slice(coco_cache, eval_cfg.max_samples)
+    require_cache_slice(inet_cache, eval_cfg.max_samples)
 
     # `ours` is the separated checkpoint plus the permutation, so it cannot be
     # evaluated without the panel. Check before anything runs: the retrieval
@@ -181,10 +207,12 @@ def _eval_stage(cfg: Config, seed_root: Path) -> None:
 
     if (eval_cfg.retrieval or eval_cfg.recon) and not paired_cache_complete(coco_cache):
         extract_coco(model_cfg=model_cfg, cache_dir=coco_cache,
-                     device=cfg.training.device)
-    if (eval_cfg.zeroshot or eval_cfg.recon) and not imagenet_cache_complete(inet_cache):
+                     device=cfg.training.device,
+                     max_groups_per_split=eval_cfg.max_samples)
+    if _wants_imagenet(eval_cfg) and not imagenet_cache_complete(inet_cache):
         extract_imagenet(model_cfg=model_cfg, cache_dir=inet_cache,
-                         device=cfg.training.device)
+                         device=cfg.training.device,
+                         max_samples=eval_cfg.max_samples)
 
     zs_name = zeroshot_filename(eval_cfg.zeroshot_variant)
 
@@ -202,10 +230,11 @@ def _eval_stage(cfg: Config, seed_root: Path) -> None:
             _once(out_dir / "recon_coco.json", lambda p: run_recon(
                 ckpt=ckpt, method=method.name, cache_dir=coco_cache, output=p,
                 dataset="coco", split="test", device=cfg.training.device))
-            _once(out_dir / "recon_imagenet.json", lambda p: run_recon(
-                ckpt=ckpt, method=method.name, cache_dir=inet_cache, output=p,
-                dataset="imagenet", device=cfg.training.device,
-                template_seed=eval_cfg.recon_template_seed))
+            if eval_cfg.recon_imagenet:
+                _once(out_dir / "recon_imagenet.json", lambda p: run_recon(
+                    ckpt=ckpt, method=method.name, cache_dir=inet_cache, output=p,
+                    dataset="imagenet", device=cfg.training.device,
+                    template_seed=eval_cfg.recon_template_seed))
 
         if eval_cfg.retrieval:
             _once(out_dir / "retrieval.json", lambda p: run_retrieval(

@@ -89,10 +89,21 @@ class ModelConfig:
 
 @dataclass
 class CacheConfig:
+    """Where the training embeddings live, and how much of the corpus they hold.
+
+    `max_samples` bounds the extraction: None extracts the whole corpus, which
+    is what every full run does, and a positive value stops after that many
+    source records. A source record is one photograph with its captions for
+    COCO, counted per split, and one stream row for CC3M. The value is written
+    into the cache's meta.json, so a cache built from a slice can never be
+    mistaken for a full one; see `src.data.cache_io.cache_slice_mismatch`.
+    """
+
     cache_dir: str
     dataset: str = "coco"           # coco | cc3m | imagenet
     split: str = "train"
     captions_json: str = ""
+    max_samples: int | None = None
 
 
 @dataclass
@@ -140,14 +151,36 @@ class EvalConfig:
     `src.eval.zeroshot`: "raw" uses every latent column and is the one Table 1
     reports, "filtered" drops columns whose image-side firing rate exceeds
     `max_fire_rate`.
+
+    `recon` turns the reconstruction evaluation on. It has two halves, one on
+    COCO and one on ImageNet, and `recon_imagenet` turns the ImageNet half off
+    on its own. Setting `zeroshot: false` and `recon_imagenet: false` together
+    is what lets the whole pipeline run without an ImageNet cache, and so
+    without a Hugging Face token: those are the only two evaluations that read
+    it. Table 1 then prints "--" in the two ImageNet columns.
+
+    `coco_cache_dir` and `imagenet_cache_dir` name the caches the evaluations
+    read. Both are extracted on demand when they are missing. `{key}` in either
+    string is replaced by the model key, so the defaults are the paths every
+    full run has always used.
+
+    `max_samples` bounds those two on-demand extractions the same way
+    `CacheConfig.max_samples` bounds the training one: None extracts
+    everything, a positive value stops after that many source records, which
+    for COCO means that many photographs per split and for ImageNet that many
+    validation images.
     """
 
     recon: bool = True
+    recon_imagenet: bool = True
     retrieval: bool = True
     zeroshot: bool = True
     zeroshot_variant: str = "raw"
     max_fire_rate: float = 0.5
     recon_template_seed: int = 0
+    coco_cache_dir: str = "cache/{key}_coco"
+    imagenet_cache_dir: str = "cache/{key}_imagenet"
+    max_samples: int | None = None
 
 
 @dataclass
@@ -210,6 +243,13 @@ class RebuttalConfig:
     `coco_seed_b` is the training seed of the second COCO model, the
     independent run that the same-modality comparisons need. The Figure 2
     pipeline trains seed 0; the rebuttal stage trains this second one itself.
+
+    `coco80_min_count` is how many positive examples an object category needs
+    in each half of the COCO test split before the two COCO-80 analyses score
+    it. Left unset, each of those analyses keeps its own default of 50. Lower
+    it only when the COCO cache holds a slice of the test split rather than all
+    5,000 photographs, because on a small slice no category reaches 50 and the
+    two analyses raise instead of reporting.
     """
 
     tau: float = 0.4
@@ -219,6 +259,7 @@ class RebuttalConfig:
     settings: list[str] = field(default_factory=lambda: ["coco_k8", "cc3m_k32"])
     analyses: list[str] = field(default_factory=lambda: ["all"])
     coco_seed_b: int = 1
+    coco80_min_count: int | None = None
 
 
 @dataclass

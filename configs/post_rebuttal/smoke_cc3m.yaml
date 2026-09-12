@@ -1,0 +1,61 @@
+# Table 1 for CLIP ViT-B/32 trained on CC3M, on a slice, for the smoke run.
+#
+# Identical to clip_b32_cc3m.yaml except for the training length, the number of
+# seeds, the cache directories and the slices. The encoder, the number of
+# active latents per input (k) and the total latent budget are unchanged, so
+# every method is trained at its real size.
+#
+# Two seeds rather than three, because the rebuttal stage reads the second seed
+# as the independent run its same-modality comparisons compare against. One
+# seed would leave that comparison untested.
+
+kind: cc3m_downstream
+
+model: !ref ../models/clip_b32.yaml
+
+cache:
+  cache_dir: cache/smoke/clip_b32_cc3m
+  dataset: cc3m
+  split: train
+  max_samples: 6000                   # image-caption pairs off the stream
+
+training:
+  lr: 5.0e-4
+  num_epochs: 1                       # 10 in the full run
+  batch_size: 1024
+  weight_decay: 1.0e-5
+  max_grad_norm: 1.0
+  k: 32
+  latent_size: 8192
+  warmup_ratio: 0.05
+  device: cuda
+  seed: 0
+  seeds: [0, 1]                       # [0, 1, 2] in the full run
+
+methods: !ref ../cc3m/_shared.yaml#methods
+
+eval:
+  recon: true
+  # Set recon_imagenet and zeroshot to false together to run with no Hugging
+  # Face token at all: those two are the only evaluations that read the
+  # ImageNet cache, and with both off it is never extracted. Table 1 then
+  # prints "--" in its two ImageNet columns and every other column is real.
+  recon_imagenet: true
+  retrieval: true
+  zeroshot: true
+  zeroshot_variant: raw
+  max_fire_rate: 0.5
+  recon_template_seed: 0
+  # The COCO evaluation cache is the one the Figure 2 part of this smoke run
+  # already extracted, so it is read rather than built a second time. Both
+  # directories sit under cache/smoke/ so that the full run's caches are never
+  # touched.
+  coco_cache_dir: cache/smoke/clip_b32_coco
+  imagenet_cache_dir: cache/smoke/clip_b32_imagenet
+  # 2,000 COCO photographs per split, matching the figure2 slice above, and
+  # 2,000 ImageNet validation images.
+  max_samples: 2000
+
+output:
+  root: outputs/post_rebuttal_smoke/cc3m_clip_b32
+  save_decoders: true

@@ -134,6 +134,61 @@ def load_stacked(cache_dir: str | Path, *, mmap: bool = True) -> dict[str, Any]:
     }
 
 
+def cache_slice_mismatch(cache_dir: str | Path, max_samples: int | None) -> str | None:
+    """Why the cache on disk cannot stand in for the one being asked for.
+
+    Returns None when it can, and one sentence naming what to do otherwise.
+
+    Every extractor records how much of its corpus it took, as `max_samples` in
+    meta.json: None for the whole corpus, an integer for the first that many
+    source records. A sliced cache has exactly the shape of a full one, only
+    fewer rows, so nothing downstream can tell the difference on its own, and a
+    full run that reused a slice left behind by a quick check would train on
+    that slice and report its numbers as the full result. A cache written
+    before this field existed carries no `max_samples` key and is read as a
+    full one, which is what it is.
+
+    The fix is always the same, and the returned sentence says it: delete the
+    cache directory and run again, or ask for the slice the cache holds.
+    """
+    cache_dir = Path(cache_dir)
+    meta_path = cache_dir / "meta.json"
+    if not meta_path.exists():
+        return None
+    try:
+        with open(meta_path) as f:
+            meta = json.load(f)
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.warning("unreadable %s (%s); the slice it holds cannot be checked",
+                       meta_path, exc)
+        return None
+    recorded = meta.get("max_samples")
+    recorded = None if recorded is None else int(recorded)
+    wanted = None if max_samples is None else int(max_samples)
+    if recorded == wanted:
+        return None
+    held = "the whole corpus" if recorded is None \
+        else f"only the first {recorded:,} source records"
+    asked = "the whole corpus" if wanted is None \
+        else f"the first {wanted:,} source records"
+    return (
+        f"the cache at {cache_dir} holds {held}, but this run asks for {asked}. "
+        f"Delete {cache_dir} and run again to extract it afresh, or set "
+        f"max_samples to {recorded!r} in the config to use the cache as it is."
+    )
+
+
+def require_cache_slice(cache_dir: str | Path, max_samples: int | None) -> None:
+    """Raise when the cache on disk was built from a different slice.
+
+    The thin wrapper around `cache_slice_mismatch` that every pipeline calls,
+    so that the refusal reads the same wherever it comes from.
+    """
+    why = cache_slice_mismatch(cache_dir, max_samples)
+    if why is not None:
+        raise ValueError(why)
+
+
 def load_captions(cache_dir: str | Path) -> dict[str, str]:
     """Caption text per key; empty when the cache carries no captions.json."""
     path = Path(cache_dir) / "captions.json"
@@ -228,6 +283,8 @@ __all__ = [
     "write_keys_and_splits",
     "load_stacked",
     "load_captions",
+    "cache_slice_mismatch",
+    "require_cache_slice",
     "split_rows",
     "paired_cache_complete",
     "save_imagenet_cache",

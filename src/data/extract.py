@@ -374,15 +374,27 @@ class _CaptionSidecar:
         return out
 
 
-def _iter_coco_groups(split: str) -> Iterator[tuple[Image.Image, list[tuple[str, str]]]]:
+def _iter_coco_groups(
+    split: str, *, streaming: bool = False,
+) -> Iterator[tuple[Image.Image, list[tuple[str, str]]]]:
     """One group per image: the PIL image plus its (key, caption) pairs.
 
     Grouping by image is what lets the extractor honour rule 1 cheaply: the
     image is encoded once and its embedding is copied into each caption's row.
+
+    `streaming` changes only how the rows arrive. False downloads the whole
+    parquet set first, about 20 GB, which is what a full extraction wants
+    because it reads every row anyway. True reads the parquet row groups one at
+    a time over the network and downloads nothing else, which is what a run
+    that takes only the first few thousand photographs wants. The rows
+    themselves, their order, and the filtering below are identical either way,
+    so a group counted in one mode is the same group in the other and the
+    resume offset carries across.
     """
     from datasets import load_dataset
 
-    ds = load_dataset(COCO_HF_ID, split=split)
+    ds = load_dataset(COCO_HF_ID, split=split, streaming=True) if streaming \
+        else load_dataset(COCO_HF_ID, split=split)
     for ex in ds:
         img = _as_pil(ex.get("image"))
         if img is None:
@@ -408,11 +420,22 @@ def extract_coco(
 
     Cache splits are named train / val / test. Idempotent: returns immediately
     when the paired cache files already exist.
+
+    `max_groups_per_split` stops each split after that many photographs. Asking
+    for a slice also switches the source to streaming reads, so that a run over
+    the first few thousand photographs fetches only the parquet row groups it
+    consumes instead of the whole 20 GB set. The value is recorded in the
+    cache's meta.json, so the resulting cache cannot later be mistaken for a
+    full one.
     """
     cache_dir = Path(cache_dir)
     if paired_cache_complete(cache_dir):
         logger.info("[extract] COCO cache already at %s - skipping", cache_dir)
         return
+    if max_groups_per_split is not None:
+        max_groups_per_split = int(max_groups_per_split)
+        logger.info("[extract] COCO is sliced to the first %d photographs per "
+                    "split, so the source is read as a stream", max_groups_per_split)
 
     encoder = load_encoder(model_cfg, device=device)
     split_keys: dict[str, list[str]] = {}
@@ -431,7 +454,13 @@ def extract_coco(
         if writer.rows_done == 0:
             sidecar.reset()
         groups_seen = writer.groups_done
-        stream: Iterator[tuple[Image.Image, list[tuple[str, str]]]] = _iter_coco_groups(src_split)
+        # `streaming` is passed only when a slice is asked for, so that a full
+        # run makes exactly the call it has always made.
+        stream: Iterator[tuple[Image.Image, list[tuple[str, str]]]] = (
+            _iter_coco_groups(src_split, streaming=True)
+            if max_groups_per_split is not None
+            else _iter_coco_groups(src_split)
+        )
         if writer.groups_done:
             stream = islice(stream, writer.groups_done, None)
         if max_groups_per_split is not None:
@@ -497,6 +526,9 @@ def extract_coco(
             "hf_id": COCO_HF_ID, "n_pairs": total,
             "split_sizes": {k: len(v) for k, v in split_keys.items()},
             "normalized": False,
+            # None means every photograph of every split; an integer means the
+            # cache holds only the first that many photographs per split.
+            "max_samples": max_groups_per_split,
         },
         captions=captions,
     )
@@ -540,6 +572,8 @@ def extract_cc3m(
     if paired_cache_complete(cache_dir):
         logger.info("[extract] CC3M cache already at %s - skipping", cache_dir)
         return
+    if max_samples is not None:
+        max_samples = int(max_samples)
 
     encoder = load_encoder(model_cfg, device=device)
     writer = _ChunkWriter(cache_dir / "parts" / split)
@@ -593,6 +627,9 @@ def extract_cc3m(
             "model_key": model_cfg.key, "dim": dim, "dataset": "cc3m",
             "hf_id": CC3M_HF_ID, "n_pairs": len(keys),
             "split_sizes": {split: len(keys)}, "normalized": False,
+            # None means the whole stream; an integer means the cache holds
+            # only the first that many stream rows.
+            "max_samples": max_samples,
         },
     )
     shutil.rmtree(cache_dir / "parts", ignore_errors=True)
@@ -658,6 +695,8 @@ def extract_imagenet(
     if imagenet_cache_complete(cache_dir):
         logger.info("[extract] ImageNet cache already at %s - skipping", cache_dir)
         return
+    if max_samples is not None:
+        max_samples = int(max_samples)
 
     encoder = load_encoder(model_cfg, device=device)
 
@@ -744,6 +783,9 @@ def extract_imagenet(
             "model_key": model_cfg.key, "dim": dim, "dataset": "imagenet",
             "hf_id": IMAGENET_HF_ID, "split": split, "n_images": n_images,
             "n_classes": n_classes, "n_templates": n_templates, "normalized": False,
+            # None means every validation image; an integer means the cache
+            # holds only the first that many.
+            "max_samples": max_samples,
         },
     )
     del image_emb

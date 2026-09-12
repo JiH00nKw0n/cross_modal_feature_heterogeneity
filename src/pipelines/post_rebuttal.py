@@ -306,6 +306,12 @@ def _run_analyses(cfg: Config, setting: Setting, *,
         # Only passed when the config asks for it, so that leaving the key out
         # keeps each analysis on the batch size its own author chose.
         knobs["batch_size"] = int(cfg.rebuttal.batch_size)
+    if cfg.rebuttal.coco80_min_count is not None:
+        # Read only by the two COCO-80 analyses, which drop an object category
+        # with fewer than this many positives in a half of the COCO test split.
+        # Every other analysis absorbs it through its **knobs, as it does the
+        # batch size, so this stays one line rather than a per-analysis table.
+        knobs["min_count"] = int(cfg.rebuttal.coco80_min_count)
     failures: list[tuple[str, str, Path]] = []
     for index, analysis in enumerate(selected, start=1):
         out_json = setting.out_dir / f"{analysis.name}.json"

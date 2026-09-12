@@ -1,0 +1,38 @@
+# Figure 2 for CLIP ViT-B/32 on COCO, on a slice, for the smoke run.
+#
+# Identical to clip_b32_coco.yaml except for four values: the number of
+# training epochs, the cache directory, the slice, and the output directory.
+# The encoder, the number of active latents per input (k) and the total latent
+# budget are unchanged, so this exercises the real model at its real size.
+#
+# cache.max_samples takes the first 2,000 photographs of each COCO split, about
+# 10,000 training pairs and 2,000 test photographs, and switches the source to
+# streaming reads so that the 20 GB parquet set is never downloaded. The cache
+# records the slice, so it can never be reused by the full run.
+
+kind: multi_density
+
+models:
+  - !ref ../models/clip_b32.yaml
+
+cache:
+  cache_dir: cache/smoke/{key}_coco   # {key} is replaced per model
+  dataset: coco
+  split: train
+  max_samples: 2000                   # photographs per split
+
+training:
+  lr: 5.0e-4
+  num_epochs: 2                       # 30 in the full run
+  batch_size: 1024
+  weight_decay: 1.0e-5
+  max_grad_norm: 1.0
+  k: 8
+  latent_size: 8192
+  warmup_ratio: 0.05
+  device: cuda
+  seed: 0
+  seeds: [0]
+
+output:
+  root: outputs/post_rebuttal_smoke/coco_clip_b32
